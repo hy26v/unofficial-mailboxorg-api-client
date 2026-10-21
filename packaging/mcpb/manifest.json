@@ -1,0 +1,75 @@
+{
+  "manifest_version": "0.3",
+  "name": "mbx",
+  "display_name": "mailbox.org (mbx)",
+  "version": "0.0.0",
+  "description": "Unofficial mailbox.org access: mail, calendar, contacts, tasks, files and settings.",
+  "long_description": "Runs the unofficial mbx CLI as a local MCP server. Each tool call runs one mbx command with the same delete protection, read-only mode and request pacing as the CLI. Read-only mode is on by default. Mail and other account data contain text from other people; a model can follow instructions hidden in that text, so check each approval. Not affiliated with mailbox.org or Open-Xchange.",
+  "author": {
+    "name": "the mbx contributors"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hy26v/unofficial-mailboxorg-api-client"
+  },
+  "homepage": "https://github.com/hy26v/unofficial-mailboxorg-api-client",
+  "documentation": "https://github.com/hy26v/unofficial-mailboxorg-api-client/blob/main/docs/MCP.md",
+  "support": "https://github.com/hy26v/unofficial-mailboxorg-api-client/issues",
+  "license": "MIT",
+  "keywords": ["mailbox.org", "email", "calendar", "contacts", "open-xchange"],
+  "server": {
+    "type": "binary",
+    "entry_point": "server/mbx",
+    "mcp_config": {
+      "command": "${__dirname}/server/mbx",
+      "args": ["mcp"],
+      "env": {
+        "MBX_USERNAME": "${user_config.username}",
+        "MBX_PASSWORD": "${user_config.password}",
+        "MBX_READ_ONLY": "${user_config.read_only}"
+      }
+    }
+  },
+  "tools": [
+    {"name": "mbx_commands", "description": "List mbx command groups and operations"},
+    {"name": "mbx_describe", "description": "Show the arguments of one mbx operation"},
+    {"name": "mbx_read", "description": "Run an operation that only reads data"},
+    {"name": "mbx_write", "description": "Run an operation that changes data but does not delete it (not offered in read-only mode)"},
+    {"name": "mbx_delete", "description": "Run an operation that deletes data (not offered in read-only mode)"},
+    {"name": "mbx_mail_list", "description": "List the newest messages of a folder"},
+    {"name": "mbx_mail_search", "description": "Search messages by words in subject, addresses or body"},
+    {"name": "mbx_mail_correspondents", "description": "Find the email addresses of a person or company in past mail"},
+    {"name": "mbx_mail_read", "description": "Read one message's body text and attachment list"},
+    {"name": "mbx_mail_senders", "description": "List the addresses the account may send from"},
+    {"name": "mbx_mail_draft", "description": "Save a message in Drafts without sending it (not offered in read-only mode)"},
+    {"name": "mbx_mail_move", "description": "Move one message, for example to the trash (not offered in read-only mode)"},
+    {"name": "mbx_events_list", "description": "List calendar events, by default for the next 30 days"},
+    {"name": "mbx_contacts_list", "description": "List contacts of the default address book"}
+  ],
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"]
+  },
+  "user_config": {
+    "username": {
+      "type": "string",
+      "title": "mailbox.org address",
+      "description": "Your mailbox.org email address.",
+      "required": true
+    },
+    "password": {
+      "type": "string",
+      "title": "mailbox.org password",
+      "description": "Optional. Leave empty to use the session from \"mbx login\" in a terminal. Claude Desktop stores it in the system keychain.",
+      "sensitive": true,
+      "required": false,
+      "default": ""
+    },
+    "read_only": {
+      "type": "boolean",
+      "title": "Read-only",
+      "description": "Offer only tools that read data. Turn off to allow changes; then configure delete protection in ~/.mbx/config.toml.",
+      "required": false,
+      "default": true
+    }
+  }
+}

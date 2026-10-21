@@ -1,0 +1,21 @@
+/mbx
+/mbx-*
+*.session.json
+mbx-session.json
+/request-guard.json*
+.mbx/
+.env
+.env.*
+!.env.example
+
+# Local testing prompts may contain credentials.
+docs/prompt.md
+
+# Agent worktrees.
+.claude/worktrees/
+.worktrees/
+/dist/
+
+# Docker deployment state and local Compose changes (see docs/DOCKER.md).
+/mbx-data/
+compose.override.yaml

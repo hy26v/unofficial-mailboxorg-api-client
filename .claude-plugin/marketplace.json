@@ -1,0 +1,16 @@
+{
+  "name": "mbx",
+  "owner": {
+    "name": "the mbx contributors"
+  },
+  "metadata": {
+    "description": "Claude Code plugin for the unofficial mailbox.org CLI"
+  },
+  "plugins": [
+    {
+      "name": "mbx",
+      "source": "./plugins/mbx",
+      "description": "mailbox.org mail, calendar, contacts, tasks and files through the mbx CLI and its MCP server"
+    }
+  ]
+}

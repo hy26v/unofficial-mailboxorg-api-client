@@ -1,0 +1,1 @@
+{"name":"whoami","summary":"Show the authenticated user","usage":"mbx whoami","effect":"read","idempotent":true,"output":{"type":"object","fields":["email","display_name","user_id"]}}

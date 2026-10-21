@@ -1,0 +1,23 @@
+# Cloudflare Access mode for compose.yaml: Access does the OAuth sign-in, and mbx checks
+# the signed Access assertion on every request. Turn it on in .env with
+# COMPOSE_FILE=compose.yaml:compose.access.yaml. See docs/DOCKER.md.
+
+services:
+  mbx:
+    command:
+      - mcp
+      - --http
+      - 0.0.0.0:8808
+      - --public-url
+      - ${MBX_PUBLIC_URL:?set MBX_PUBLIC_URL in .env}
+      - --allow-writes=${MBX_ALLOW_WRITES:-false}
+      - --auth
+      - cloudflare-access
+      - --access-team-domain
+      - ${MBX_ACCESS_TEAM_DOMAIN:?set MBX_ACCESS_TEAM_DOMAIN in .env}
+      - --access-aud
+      - ${MBX_ACCESS_AUD:?set MBX_ACCESS_AUD in .env}
+      - --access-email
+      - ${MBX_ACCESS_EMAIL:?set MBX_ACCESS_EMAIL in .env}
+    # Only the tunnel reaches the server.
+    ports: !reset []

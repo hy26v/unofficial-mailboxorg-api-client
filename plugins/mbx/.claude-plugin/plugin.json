@@ -1,0 +1,12 @@
+{
+  "name": "mbx",
+  "version": "0.2.0",
+  "description": "mailbox.org mail, calendar, contacts, tasks and files through the unofficial mbx CLI and its MCP server",
+  "author": {
+    "name": "the mbx contributors"
+  },
+  "homepage": "https://github.com/hy26v/unofficial-mailboxorg-api-client",
+  "repository": "https://github.com/hy26v/unofficial-mailboxorg-api-client",
+  "license": "MIT",
+  "keywords": ["mailbox.org", "email", "calendar", "contacts", "open-xchange", "mcp"]
+}

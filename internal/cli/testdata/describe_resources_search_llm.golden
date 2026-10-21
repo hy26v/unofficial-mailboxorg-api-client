@@ -1,0 +1,1 @@
+{"name":"resources.search","summary":"Search OX resources (rooms/equipment) by name pattern","usage":"mbx resources search","effect":"read","idempotent":true,"args":{"pattern":{"type":"string","required":false}},"output":{"type":"array","fields":["id","display_name","email"]}}

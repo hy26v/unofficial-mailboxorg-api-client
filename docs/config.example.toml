@@ -1,0 +1,18 @@
+# ABOUTME: Example user-level mbx configuration with delete protection enabled.
+# ABOUTME: Copy to ~/.mbx/config.toml and replace the username; never add a password.
+
+username = "you@mailbox.org"
+
+[safety]
+# Use ["mail", "folders"] to protect only those resources, or [] to disable.
+# Protecting mail also blocks direct or move-many moves into default0/Trash.
+delete_protection = ["all"]
+# Uncomment to refuse every command and flag that changes account data.
+# read_only = true
+
+# Mutable session and request-guard state are kept separate from this durable
+# configuration. request-guard.json always remains in MBX_HOME so processes using the
+# same home coordinate pacing and provider cooldowns.
+# Relative paths resolve from the directory containing config.toml.
+[state]
+session_file = "session.json"

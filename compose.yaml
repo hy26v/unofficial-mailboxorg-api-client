@@ -1,0 +1,53 @@
+# Runs the mbx remote MCP server and a Cloudflare tunnel to it. See docs/DOCKER.md.
+# Put the settings in .env next to this file; .env.example lists them. For Cloudflare
+# Access instead of the built-in OAuth, add compose.access.yaml through COMPOSE_FILE.
+
+services:
+  mbx:
+    build:
+      context: .
+      args:
+        MBX_VERSION: ${MBX_VERSION:-}
+    image: mbx:local
+    restart: unless-stopped
+    # Run as the owner of the data directory on the host.
+    user: "${MBX_UID:-1000}:${MBX_GID:-1000}"
+    command:
+      - mcp
+      - --http
+      - 0.0.0.0:8808
+      - --public-url
+      - ${MBX_PUBLIC_URL:?set MBX_PUBLIC_URL in .env}
+      - --allow-writes=${MBX_ALLOW_WRITES:-false}
+    environment:
+      # Required for the built-in OAuth; mbx refuses to start without it.
+      MBX_MCP_OWNER_SECRET: ${MBX_MCP_OWNER_SECRET:-}
+      # Optional. With both values, the server signs in again when the session expires.
+      MBX_USERNAME: ${MBX_USERNAME:-}
+      MBX_PASSWORD: ${MBX_PASSWORD:-}
+      TZ: ${TZ:-Etc/UTC}
+    volumes:
+      - ${MBX_DATA_DIR:-./mbx-data}:/data
+    # Only for checks from this host. The tunnel uses the container network.
+    ports:
+      - 127.0.0.1:${MBX_HOST_PORT:-8808}:8808
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+
+  # Starts only with the "tunnel" profile (COMPOSE_PROFILES=tunnel in .env), so a
+  # cloudflared that already runs on the host can use the loopback port instead.
+  cloudflared:
+    image: docker.io/cloudflare/cloudflared:2026.10.2@sha256:0e56c13c7058fcef9c4f0e7d83372f82330548dbf8f8b366f3d8b506526d93b2
+    profiles: [tunnel]
+    restart: unless-stopped
+    # The public hostname of the tunnel must send traffic to http://mbx:8808.
+    command: [tunnel, --no-autoupdate, run]
+    environment:
+      # Compose checks required values in every service, also in inactive profiles.
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on: [mbx]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]

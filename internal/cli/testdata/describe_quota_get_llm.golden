@@ -1,0 +1,1 @@
+{"name":"quota.get","summary":"Show filestore quota usage","usage":"mbx quota get --type <string>","effect":"read","idempotent":true,"args":{"type":{"type":"string","required":true}},"output":{"type":"object","fields":["quota","use"]}}

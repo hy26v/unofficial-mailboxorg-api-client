@@ -1,0 +1,16 @@
+# Keep secrets, account state and large local files out of the image build context.
+.git
+.env
+.env.*
+mbx-data
+.mbx
+*.session.json
+mbx-session.json
+request-guard.json*
+/mbx
+/mbx-*
+/dist
+.worktrees
+.claude
+.agents
+docs

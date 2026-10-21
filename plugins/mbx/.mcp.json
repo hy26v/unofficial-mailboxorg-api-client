@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "mbx": {
+      "command": "mbx",
+      "args": ["mcp"]
+    }
+  }
+}

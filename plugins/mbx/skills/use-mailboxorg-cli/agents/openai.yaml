@@ -1,0 +1,4 @@
+interface:
+  display_name: "Use mailbox.org CLI"
+  short_description: "On-demand, token-efficient mailbox.org automation"
+  default_prompt: "Use $use-mailboxorg-cli to load only the guidance relevant to this mailbox.org task and complete it safely."

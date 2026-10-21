@@ -1,0 +1,67 @@
+[
+  {
+    "name": "senders",
+    "prompt": "Which email addresses can I send mail from?",
+    "checks": [
+      {"module": "account", "action": "all"},
+      {"answer_contains": ["support@example.org", "team@example.org"]}
+    ]
+  },
+  {
+    "name": "draft-from-alias",
+    "prompt": "Save a draft, do not send it: to bob@example.com, subject 'Project kickoff', and a two-sentence body that proposes a kickoff meeting next week. Use my support@example.org address as the sender.",
+    "checks": [
+      {"module": "mail", "action": "new", "method": "PUT", "body_contains": ["From: ", "support@example.org", "To: bob@example.com"]},
+      {"module": "mail", "action": "new", "method": "POST", "absent": true}
+    ]
+  },
+  {
+    "name": "invoice-amount",
+    "prompt": "How much is the Acme Hosting invoice, and when is it due?",
+    "checks": [
+      {"module": "mail", "action": "get", "query": "id=101"},
+      {"answer_contains": ["1,234.56"]}
+    ]
+  },
+  {
+    "name": "calendar",
+    "prompt": "What is on my calendar in the next few days?",
+    "checks": [
+      {"module": "chronos", "action": "all"},
+      {"answer_contains": ["Dentist", "Team sync"]}
+    ]
+  },
+  {
+    "name": "trash-newsletter",
+    "prompt": "Delete the Acme newsletter. Only move it to the trash, do not delete it permanently.",
+    "checks": [
+      {"module": "mail", "action": "update", "query": "id=102", "body_contains": ["default0/Trash"]},
+      {"module": "mail", "action": "delete", "absent": true},
+      {"module": "mail", "action": "new", "method": "POST", "absent": true}
+    ]
+  },
+  {
+    "name": "reply-draft",
+    "prompt": "Alice asked me about lunch. Draft a short reply that says yes. Do not send it.",
+    "checks": [
+      {"module": "mail", "action": "get", "query": "id=103"},
+      {"module": "mail", "action": "new", "method": "PUT", "body_contains": ["alice@example.net"]}
+    ]
+  },
+  {
+    "name": "correspondent-address",
+    "prompt": "Which email address does Acme Billing use to write to me? Look it up in my past mail.",
+    "checks": [
+      {"module": "mail", "action": "search"},
+      {"answer_contains": ["billing@acme.example"]}
+    ]
+  },
+  {
+    "name": "contact-email",
+    "prompt": "What is Bob Builder's email address?",
+    "checks": [
+      {"module": "contacts", "action": "all"},
+      {"answer_contains": ["bob@example.com"]}
+    ]
+  }
+]
