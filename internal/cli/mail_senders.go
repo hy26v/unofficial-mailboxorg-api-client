@@ -31,7 +31,10 @@ func init() {
 		Endpoint:   "/account",
 		SideEffect: operations.SideEffectRead,
 		Idempotent: true,
-		Args:       map[string]operations.ArgSpec{},
+		Args: map[string]operations.ArgSpec{
+			"query":    {Type: "string", Required: false, Description: "keep only senders whose address or name contains this text (case-insensitive), for example example.org"},
+			"variants": {Type: "bool", Required: false, Description: "also list the secure.mailbox.org and tls.mailbox.org forms of mailbox.org addresses; by default they are left out when the plain address is listed, and hidden_variants counts them"},
+		},
 		Output: operations.OutputSpec{
 			Type:         "array",
 			Fields:       []string{"address", "name", "account_id", "account_name", "primary", "default", "mailbox_org_variant"},
@@ -184,6 +187,11 @@ func resolveFrom(ctx context.Context, c *client.Client, sess client.Session, fro
 	if cerr != nil {
 		return nil, cerr
 	}
+	return matchSender(senders, from)
+}
+
+// matchSender is resolveFrom with the sender list already fetched.
+func matchSender(senders []mailSender, from *mail.Address) (*mail.Address, *cliErrors.Error) {
 	for _, sender := range senders {
 		if sender.Address == from.Address {
 			resolved := *from
@@ -196,12 +204,49 @@ func resolveFrom(ctx context.Context, c *client.Client, sess client.Session, fro
 	return nil, invalidArgument(fmt.Sprintf("--from %s is not a sender address of this account; run \"mbx mail senders\" for the list", from.Address))
 }
 
+// mailboxOrgBaseAddress is the plain mailbox.org address of a secure or tls variant.
+func mailboxOrgBaseAddress(address string) string {
+	at := strings.LastIndex(address, "@")
+	if at < 0 {
+		return address
+	}
+	return address[:at] + "@mailbox.org"
+}
+
+// filterMailSenders keeps the senders that match query and, unless variants is set,
+// leaves out each secure or tls variant whose plain address is also listed, except the
+// default sender. It returns the kept senders and how many variants it left out.
+func filterMailSenders(senders []mailSender, query string, variants bool) ([]mailSender, int) {
+	listed := map[string]bool{}
+	for _, sender := range senders {
+		listed[sender.Address] = true
+	}
+	query = strings.ToLower(strings.TrimSpace(query))
+	kept := []mailSender{}
+	hidden := 0
+	for _, sender := range senders {
+		if query != "" && !strings.Contains(sender.Address, query) && !strings.Contains(strings.ToLower(sender.Name), query) {
+			continue
+		}
+		if !variants && !sender.Default && sender.MailboxOrgVariant != "" && listed[mailboxOrgBaseAddress(sender.Address)] {
+			hidden++
+			continue
+		}
+		kept = append(kept, sender)
+	}
+	return kept, hidden
+}
+
 func runMailSenders(stdout, stderr io.Writer, args []string, httpClient *http.Client, baseURL, sessionPath string, getenv func(string) string) int {
 	f, ferr := parseCommandFlags("mail.senders", args)
 	if ferr != nil {
 		return exitWithError(stderr, f.LLM(), ferr)
 	}
 	llm := f.LLM()
+	query, querySet := f.Lookup("query")
+	if querySet && strings.TrimSpace(query) == "" {
+		return exitWithError(stderr, llm, invalidArgument("--query must not be blank"))
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
@@ -213,14 +258,13 @@ func runMailSenders(stdout, stderr io.Writer, args []string, httpClient *http.Cl
 	if cerr != nil {
 		return exitWithError(stderr, llm, cerr)
 	}
-	if senders == nil {
-		senders = []mailSender{}
-	}
+	senders, hidden := filterMailSenders(senders, query, f.Bool("variants"))
 
 	if llm {
 		render.CompactJSON(stdout, struct {
-			Senders []mailSender `json:"senders"`
-		}{Senders: senders})
+			Senders        []mailSender `json:"senders"`
+			HiddenVariants int          `json:"hidden_variants,omitempty"`
+		}{Senders: senders, HiddenVariants: hidden})
 		return 0
 	}
 	rows := make([][]string, len(senders))
@@ -232,5 +276,8 @@ func runMailSenders(stdout, stderr io.Writer, args []string, httpClient *http.Cl
 		rows[i] = []string{s.Address, s.Name, strconv.Itoa(s.AccountID), mark, s.MailboxOrgVariant}
 	}
 	render.Table(stdout, []string{"address", "name", "account_id", "default", "variant"}, rows)
+	if hidden > 0 {
+		fmt.Fprintf(stdout, "\n(%d secure.mailbox.org and tls.mailbox.org forms left out; --variants lists them)\n", hidden)
+	}
 	return 0
 }

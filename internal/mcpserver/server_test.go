@@ -726,8 +726,8 @@ func TestDescriptions_UseToolArgumentsNotCLIFlags(t *testing.T) {
 
 	tools := listTools(t, session)
 	description := tools["mbx_mail_search"].Description
-	if !strings.Contains(description, "Output fields: id, subject, from, date.") ||
-		!strings.Contains(description, "Returned only when fields or select names them: folder, to,") ||
+	if !strings.Contains(description, "Output fields: id, folder, subject, from, date.") ||
+		!strings.Contains(description, "Returned only when fields or select names them: to, cc,") ||
 		!strings.Contains(description, "over 60000 bytes returns the newest messages that fit") {
 		t.Errorf("mbx_mail_search description = %q", description)
 	}
@@ -750,5 +750,42 @@ func TestServerArgs_AreRefusedFromTheModel(t *testing.T) {
 	}
 	if len(runner.calls) != 0 {
 		t.Errorf("refused calls ran the CLI: %q", runner.calls)
+	}
+}
+
+func TestInstructions_NameTheToolsOfFrequentWorkflows(t *testing.T) {
+	full := connect(t, New(Options{Run: (&recordingRunner{}).run, Getenv: noEnv, TaskTools: true})).InitializeResult().Instructions
+	for _, want := range []string{
+		"To find and read a message: load mbx_mail_search, mbx_mail_read together.",
+		"To answer or follow up on a message: load mbx_mail_search, mbx_mail_read, mbx_mail_draft, mbx_mail_senders together.",
+	} {
+		if !strings.Contains(full, want) {
+			t.Errorf("instructions miss %q", want)
+		}
+	}
+	readOnly := connect(t, New(Options{Run: (&recordingRunner{}).run, Getenv: noEnv, TaskTools: true, ReadOnly: true})).InitializeResult().Instructions
+	if !strings.Contains(readOnly, "To find and read a message:") || strings.Contains(readOnly, "To answer or follow up on a message:") {
+		t.Errorf("read-only instructions should name only the read workflow:\n%s", readOnly)
+	}
+}
+
+func TestTaskTools_PassReplyAndSenderFilterArguments(t *testing.T) {
+	runner := &recordingRunner{}
+	session := connect(t, New(Options{Run: runner.run, Getenv: noEnv, TaskTools: true}))
+	call(t, session, "mbx_mail_draft", map[string]any{"reply-id": "12", "reply-folder": "default0/INBOX", "reply-all": true, "signature": "default", "body": "Thanks"})
+	call(t, session, "mbx_mail_senders", map[string]any{"query": "example.org"})
+	call(t, session, "mbx_mail_read", map[string]any{"folder": "default0/INBOX", "id": "12", "links": "none"})
+	want := [][]string{
+		{"--format", "json", "--", "mail", "draft", "--body", "Thanks", "--reply-all", "--reply-folder", "default0/INBOX", "--reply-id", "12", "--signature", "default"},
+		{"--format", "json", "--", "mail", "senders", "--query", "example.org"},
+		{"--format", "json", "--", "mail", "read", "--folder", "default0/INBOX", "--id", "12", "--links", "none"},
+	}
+	if len(runner.calls) != len(want) {
+		t.Fatalf("CLI calls = %q", runner.calls)
+	}
+	for i := range want {
+		if !slices.Equal(runner.calls[i], want[i]) {
+			t.Errorf("call %d = %q, want %q", i, runner.calls[i], want[i])
+		}
 	}
 }

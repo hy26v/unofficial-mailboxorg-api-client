@@ -46,17 +46,21 @@ To find messages by content, search on the server. Every word in `--query` must 
 (case-insensitive substrings); a double-quoted span is one phrase. `--in` picks the
 fields from `subject,from,to,cc,bcc,body` (default `subject,from,to,cc,body`);
 `address` stands for `from,to,cc,bcc`. Search returns the same metadata, paging,
-filters, and output options as `mail.list`. Use folder `1` with `--all --recursive` to
-search every mail folder. A `--select` of a field that only `--fields` returns (such as
-`to` or `folder`) adds it to `--fields`. With `--fit`, a result over
+filters, and output options as `mail.list`, and always the `folder` of each match, which
+`mail.read` needs with the id. Use folder `1` with `--recursive` to search every mail
+folder, Trash included; `--skip-trash` leaves out Trash and Spam and their subfolders.
+A word in `--query` also matches body text, so newsletters and receipts that mention it
+match too: `--in subject,from` searches only subjects and senders, and
+`--from-domain example.org` keeps only senders of that domain. A `--select` of a field
+that only `--fields` returns (such as `to`) adds it to `--fields`. With `--fit`, a result over
 `--max-output-bytes` keeps the newest messages that fit, with `available` and a
 `next_cursor` that resumes after them:
 
 ```sh
 mbx mail search --query 'invoice "March 2026"' --limit 20 \
   --format tsv --select id,subject,from,date
-mbx mail search --query refund --in body --folder 1 --all --recursive \
-  --fields folder --format jsonl
+mbx mail search --query refund --in body --folder 1 --recursive --skip-trash --format jsonl
+mbx mail search --query grant --from-domain example.org --folder 1 --recursive --limit 10 --llm
 ```
 
 To find a person's or company's address, list the distinct matching addresses of all
@@ -68,7 +72,12 @@ mbx mail correspondents --query example.org --format tsv --select address,name,c
 ```
 
 Read one message's body with the id and folder from a list or search. The default is
-plain text (HTML is converted); `--body-format html` returns provider-sanitized HTML.
+plain text: HTML, and provider text parts that hold display HTML (`<br>`, anchors and
+entities), are converted to lines with decoded entities. Links show as `text (url)`;
+`--links clean` (default) removes tracking parameters such as `utm_*` and `_hsenc` and
+leaves out links without text, `--links full` keeps every URL unchanged (use it when an
+exact link matters), and `--links none` shows only the link text. `--body-format html`
+returns provider-sanitized HTML.
 Reading does not mark the message seen unless you add `--mark-seen`. `mail.read` is a
 read; `mbx describe mail.read --llm` marks only the `mark-seen` argument with
 `"effect":"write"`, and read-only mode refuses that flag. The body is capped
@@ -100,21 +109,41 @@ mbx mail attachment --folder default0/INBOX --id <id> --attachment <attachment-i
   --save-to ./invoice.pdf --llm
 ```
 
-Save a draft unless the user explicitly authorized delivery:
+Save a draft unless the user explicitly authorized delivery. The body is saved as plain
+text (`text/plain`, UTF-8) exactly as given. The result repeats `to`, `cc`, `bcc` and
+`subject`, so no second read is needed to check them:
 
 ```sh
 mbx mail draft --to <address> --subject <subject> --body <body> \
   --format values --select id,folder
 ```
 
+To answer a message, give its id and folder. The draft gets `In-Reply-To` and
+`References`, so it threads with the original. Unless given, `to` is the original's
+`Reply-To` or sender (for the account's own message, its recipients), `subject` is
+`Re: ` and the original subject, and `from` is the account address the original was sent
+to. `--reply-all` adds the other recipients as `cc`, without the account's own addresses;
+`--quote` adds the original text with `> ` after the body. The result names the
+original's Message-ID as `in_reply_to`. A dry run shows the reply target without reading it:
+
+```sh
+mbx mail draft --reply-id <id> --reply-folder <folder> --body <body> --llm
+mbx mail draft --reply-id <id> --reply-folder <folder> --reply-all --quote --body <body> --llm
+```
+
+mbx adds no signature by itself. `--signature <snippet-id>` adds one from `snippet.list`
+after the body (before a quote); `--signature default` uses the account's default
+signature, for replies its reply signature. `mail send` takes `--signature` too.
+
 The account can send from several addresses (aliases and external accounts). List them
 once, then give the chosen one as `--from` to `mail draft` or `mail send`; without
 `--from`, the account's default sender applies. `mbx` refuses a `--from` that is not in
-the list. Prefer the plain address over its `mailbox_org_variant` forms
-(`@secure.mailbox.org`, `@tls.mailbox.org`) unless the user asks for one:
+the list. `mail senders` leaves out the `@secure.mailbox.org` and `@tls.mailbox.org`
+forms of listed mailbox.org addresses and counts them in `hidden_variants`; `--variants`
+lists them. `--query` keeps the senders whose address or name contains the text:
 
 ```sh
-mbx mail senders --format tsv --select address,name,default,mailbox_org_variant
+mbx mail senders --query example.org --format tsv --select address,name,default
 mbx mail draft --from alias@example.org --to <address> --subject <subject> --body <body> --llm
 ```
 

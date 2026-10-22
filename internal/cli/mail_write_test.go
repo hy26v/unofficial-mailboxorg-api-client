@@ -1004,8 +1004,8 @@ func TestMailDraft_Success_LLMMode(t *testing.T) {
 	if stderr != "" {
 		t.Errorf("stderr = %q, want empty", stderr)
 	}
-	if stdout != `{"id":"42","folder":"default0/Drafts"}`+"\n" {
-		t.Errorf("stdout = %q, want compact JSON with id and folder", stdout)
+	if stdout != `{"id":"42","folder":"default0/Drafts","to":[],"subject":"hi"}`+"\n" {
+		t.Errorf("stdout = %q, want compact JSON with id, folder, recipients and subject", stdout)
 	}
 }
 

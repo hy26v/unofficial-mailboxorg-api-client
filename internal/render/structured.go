@@ -271,7 +271,7 @@ func isCollectionMetadata(name string) bool {
 	switch name {
 	case "count", "total", "available", "truncated", "has_more", "offset", "limit",
 		"next_offset", "next_cursor", "moved", "resumed", "checkpoint",
-		"dry_run", "preflight":
+		"dry_run", "preflight", "hidden_variants":
 		return true
 	default:
 		return false

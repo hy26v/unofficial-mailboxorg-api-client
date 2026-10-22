@@ -64,6 +64,7 @@ mbx mail search --query invoice --folder 1 --recursive    # search every mail fo
 mbx mail read --folder default0/INBOX --id 1234           # body text and attachment list
 mbx mail correspondents --query example.org               # find someone's address
 mbx mail draft --to bob@example.com --subject Hi --body "Hello Bob"
+mbx mail draft --reply-id 1234 --reply-folder default0/INBOX --body "Thanks!"   # threaded reply
 mbx events list                                           # the next 30 days
 mbx contacts list --format jsonl --select display_name,email
 ```

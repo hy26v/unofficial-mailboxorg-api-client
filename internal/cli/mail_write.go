@@ -142,49 +142,55 @@ func init() {
 		SideEffect: operations.SideEffectWrite,
 		Idempotent: false,
 		Args: map[string]operations.ArgSpec{
-			"to":      {Type: "string", Required: false, Description: "recipient address, repeatable"},
-			"cc":      {Type: "string", Required: false, Description: "cc address, repeatable"},
-			"bcc":     {Type: "string", Required: false, Description: "bcc address, repeatable"},
-			"from":    {Type: "string", Required: false, Description: "sender address from mail.senders, optionally \"Name <address>\"; default: the account's default sender"},
-			"subject": {Type: "string", Required: false, Description: "message subject"},
-			"body":    {Type: "string", Required: false, Description: "message body (plain text)"},
-			"attach":  {Type: "string", Required: false, Description: "path to a file to attach, repeatable"},
-			"input":   {Type: "string", Required: false, Description: "structured input: a JSON object with from/to/cc/bcc/subject/body/attachments, or @file.json to read it from a file"},
-			"dry-run": {Type: "bool", Required: false, Description: "validate and show the message that would be sent, without sending it"},
+			"to":        {Type: "string", Required: false, Description: "recipient address, repeatable"},
+			"cc":        {Type: "string", Required: false, Description: "cc address, repeatable"},
+			"bcc":       {Type: "string", Required: false, Description: "bcc address, repeatable"},
+			"from":      {Type: "string", Required: false, Description: "sender address from mail.senders, optionally \"Name <address>\"; default: the account's default sender"},
+			"subject":   {Type: "string", Required: false, Description: "message subject"},
+			"body":      {Type: "string", Required: false, Description: "message body, sent as plain text (text/plain, UTF-8) exactly as given; mbx adds no signature unless --signature is given"},
+			"signature": {Type: "string", Required: false, Description: "add a signature after the body: a snippet id from snippet.list, or default for the account's default signature for new mail"},
+			"attach":    {Type: "string", Required: false, Description: "path to a file to attach, repeatable"},
+			"input":     {Type: "string", Required: false, Description: "structured input: a JSON object with from/to/cc/bcc/subject/body/attachments, or @file.json to read it from a file"},
+			"dry-run":   {Type: "bool", Required: false, Description: "validate and show the message that would be sent, without sending it"},
 		},
 		Output: operations.OutputSpec{
 			Type:         "object",
 			Fields:       []string{"sent", "id", "from", "to", "subject"},
 			ScalarFields: []string{"sent", "id", "from", "subject"},
-			DryRunFields: []string{"dry_run", "from", "to", "cc", "bcc", "subject", "attachments"},
+			DryRunFields: []string{"dry_run", "from", "to", "cc", "bcc", "subject", "attachments", "signature"},
 		},
 	})
 	operations.Register(operations.Operation{
 		Name:       "mail.draft",
 		Resource:   "mail",
 		Action:     "draft",
-		Summary:    "Save a message as a draft in the Drafts folder without sending it",
-		Keywords:   []string{"compose", "write", "prepare", "reply"},
+		Summary:    "Save a message as a draft in the Drafts folder without sending it, optionally as a threaded reply to a message",
+		Keywords:   []string{"compose", "write", "prepare", "reply", "answer", "respond", "follow up"},
 		Method:     http.MethodPut,
 		Endpoint:   "/mail",
 		SideEffect: operations.SideEffectWrite,
 		Idempotent: false,
 		Args: map[string]operations.ArgSpec{
-			"to":      {Type: "string", Required: false, Description: "recipient address, repeatable"},
-			"cc":      {Type: "string", Required: false, Description: "cc address, repeatable"},
-			"bcc":     {Type: "string", Required: false, Description: "bcc address, repeatable"},
-			"from":    {Type: "string", Required: false, Description: "sender address from mail.senders, optionally \"Name <address>\"; default: the account's default sender"},
-			"subject": {Type: "string", Required: false, Description: "message subject"},
-			"body":    {Type: "string", Required: false, Description: "message body (plain text)"},
-			"input":   {Type: "string", Required: false, Description: "structured input: a JSON object with from/to/cc/bcc/subject/body, or @file.json to read it from a file"},
-			"folder":  {Type: "string", Required: false, Description: "destination folder id (default \"default0/Drafts\")"},
-			"dry-run": {Type: "bool", Required: false, Description: "validate and show the draft that would be saved, without saving it"},
+			"to":           {Type: "string", Required: false, Description: "recipient address, repeatable"},
+			"cc":           {Type: "string", Required: false, Description: "cc address, repeatable"},
+			"bcc":          {Type: "string", Required: false, Description: "bcc address, repeatable"},
+			"from":         {Type: "string", Required: false, Description: "sender address from mail.senders, optionally \"Name <address>\"; default: the account's default sender"},
+			"subject":      {Type: "string", Required: false, Description: "message subject; for a reply, default \"Re: \" and the original subject"},
+			"body":         {Type: "string", Required: false, Description: "message body, saved as plain text (text/plain, UTF-8) exactly as given; mbx adds no signature unless --signature is given"},
+			"signature":    {Type: "string", Required: false, Description: "add a signature after the body: a snippet id from snippet.list, or default for the account's default signature (for replies, the reply signature)"},
+			"reply-id":     {Type: "string", Required: false, Description: "id of the message to answer; the draft gets In-Reply-To and References, so it threads, and to, subject and from default from that message"},
+			"reply-folder": {Type: "string", Required: false, Description: "folder id of the message to answer, with --reply-id"},
+			"reply-all":    {Type: "bool", Required: false, Description: "with --reply-id, also send to the other recipients of the original as cc"},
+			"quote":        {Type: "bool", Required: false, Description: "with --reply-id, add the original text, quoted with \"> \", after the body"},
+			"input":        {Type: "string", Required: false, Description: "structured input: a JSON object with from/to/cc/bcc/subject/body, or @file.json to read it from a file"},
+			"folder":       {Type: "string", Required: false, Description: "destination folder id (default \"default0/Drafts\")"},
+			"dry-run":      {Type: "bool", Required: false, Description: "validate and show the draft that would be saved, without saving it or reading the message to answer"},
 		},
 		Output: operations.OutputSpec{
 			Type:         "object",
-			Fields:       []string{"id", "folder", "from"},
-			ScalarFields: []string{"id", "folder", "from"},
-			DryRunFields: []string{"dry_run", "from", "to", "cc", "bcc", "subject", "folder"},
+			Fields:       []string{"id", "folder", "from", "to", "cc", "bcc", "subject", "in_reply_to", "signature"},
+			ScalarFields: []string{"id", "folder", "from", "subject", "in_reply_to", "signature"},
+			DryRunFields: []string{"dry_run", "from", "to", "cc", "bcc", "subject", "folder", "reply_folder", "reply_id", "signature"},
 		},
 	})
 }
@@ -199,6 +205,11 @@ type mailSendInput struct {
 	Subject     string   `json:"subject,omitempty"`
 	Body        string   `json:"body,omitempty"`
 	Attachments []string `json:"attachments,omitempty"`
+
+	// inReplyTo and references are the threading headers of a reply draft: the original's
+	// Message-ID, and its References followed by that Message-ID.
+	inReplyTo  string
+	references []string
 }
 
 // buildMailSendInput merges structured --input with --to/--cc/--bcc/--subject/--body/--attach
@@ -524,6 +535,10 @@ func runMailSend(stdout, stderr io.Writer, args []string, httpClient *http.Clien
 	}
 	llm := f.LLM()
 	dryRun := f.Bool("dry-run")
+	signature, cerr := parseSignatureFlag(f)
+	if cerr != nil {
+		return exitWithError(stderr, llm, cerr)
+	}
 
 	if len(msg.To) == 0 {
 		return exitWithError(stderr, llm, invalidArgument("--to is required (or --input with a non-empty \"to\" array)"))
@@ -548,7 +563,7 @@ func runMailSend(stdout, stderr io.Writer, args []string, httpClient *http.Clien
 	if dryRun {
 		renderMailPreview(stdout, llm, mailPreview{
 			From: fromDisplay(msg.From), To: msg.To, Cc: msg.Cc, Bcc: msg.Bcc, Subject: msg.Subject,
-			Attachments: attachmentNames(msg.Attachments),
+			Attachments: attachmentNames(msg.Attachments), Signature: signature,
 		})
 		return 0
 	}
@@ -566,6 +581,13 @@ func runMailSend(stdout, stderr io.Writer, args []string, httpClient *http.Clien
 	from, cerr := resolveMessageFrom(ctx, c, sess, msg.From)
 	if cerr != nil {
 		return exitWithError(stderr, llm, cerr)
+	}
+	if signature != "" {
+		text, _, cerr := fetchMailSignature(ctx, c, sess, signature, false)
+		if cerr != nil {
+			return exitWithError(stderr, llm, cerr)
+		}
+		msg.Body = appendBodySection(msg.Body, text)
 	}
 	meta := map[string]any{
 		"to":      mailAddressPairs(msg.To),
@@ -669,6 +691,9 @@ type mailPreview struct {
 	Subject     string   `json:"subject,omitempty"`
 	Attachments []string `json:"attachments,omitempty"`
 	Folder      string   `json:"folder,omitempty"`
+	ReplyFolder string   `json:"reply_folder,omitempty"`
+	ReplyID     string   `json:"reply_id,omitempty"`
+	Signature   string   `json:"signature,omitempty"`
 }
 
 // renderMailPreview writes what the message would be. A dry run is worth running only if it
@@ -702,8 +727,12 @@ func renderMailPreview(stdout io.Writer, llm bool, preview mailPreview) {
 	if len(preview.Attachments) > 0 {
 		fields = append(fields, render.Field{Name: "attachments", Value: addressListToString(preview.Attachments)})
 	}
-	if preview.Folder != "" {
-		fields = append(fields, render.Field{Name: "folder", Value: preview.Folder})
+	for _, pair := range []struct{ name, value string }{
+		{"folder", preview.Folder}, {"reply_folder", preview.ReplyFolder}, {"reply_id", preview.ReplyID}, {"signature", preview.Signature},
+	} {
+		if pair.value != "" {
+			fields = append(fields, render.Field{Name: pair.name, Value: pair.value})
+		}
 	}
 	render.KeyValueTable(stdout, fields)
 }
@@ -778,6 +807,13 @@ func buildDraftMIME(msg mailSendInput, from *mail.Address) []byte {
 	if msg.Subject != "" {
 		b.WriteString("Subject: " + mime.QEncoding.Encode("UTF-8", msg.Subject) + "\r\n")
 	}
+	if msg.inReplyTo != "" {
+		b.WriteString("In-Reply-To: " + msg.inReplyTo + "\r\n")
+	}
+	if len(msg.references) > 0 {
+		// One message id per line keeps every line short however long the thread is.
+		b.WriteString("References: " + strings.Join(msg.references, "\r\n ") + "\r\n")
+	}
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=UTF-8\r\n")
 	b.WriteString("Content-Transfer-Encoding: 8bit\r\n")
@@ -798,6 +834,14 @@ func runMailDraft(stdout, stderr io.Writer, args []string, httpClient *http.Clie
 	if value, ok := f.Lookup("folder"); ok {
 		folder = value
 	}
+	reply, cerr := parseMailReplyOptions(f)
+	if cerr != nil {
+		return exitWithError(stderr, llm, cerr)
+	}
+	signature, cerr := parseSignatureFlag(f)
+	if cerr != nil {
+		return exitWithError(stderr, llm, cerr)
+	}
 
 	if err := validateRecipientAddresses(msg); err != nil {
 		return exitWithError(stderr, llm, invalidArgument(err.Error()))
@@ -815,6 +859,7 @@ func runMailDraft(stdout, stderr io.Writer, args []string, httpClient *http.Clie
 	if dryRun {
 		renderMailPreview(stdout, llm, mailPreview{
 			From: fromDisplay(msg.From), To: msg.To, Cc: msg.Cc, Bcc: msg.Bcc, Subject: msg.Subject, Folder: folder,
+			ReplyFolder: reply.folder, ReplyID: reply.id, Signature: signature,
 		})
 		return 0
 	}
@@ -829,7 +874,7 @@ func runMailDraft(stdout, stderr io.Writer, args []string, httpClient *http.Clie
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
 
-	from, cerr := resolveMessageFrom(ctx, c, sess, msg.From)
+	from, signatureID, cerr := completeMailDraft(ctx, c, sess, &msg, reply, signature)
 	if cerr != nil {
 		return exitWithError(stderr, llm, cerr)
 	}
@@ -858,12 +903,21 @@ func runMailDraft(stdout, stderr io.Writer, args []string, httpClient *http.Clie
 		return cliErrors.ExitCodeFor(cerr)
 	}
 
+	// The result repeats the recipients and subject, so a caller can check the draft
+	// without reading it again.
 	if llm {
 		render.CompactJSON(stdout, struct {
-			ID     string `json:"id"`
-			Folder string `json:"folder"`
-			From   string `json:"from,omitempty"`
-		}{ID: result.ID, Folder: newFolder, From: addressText(from)})
+			ID        string   `json:"id"`
+			Folder    string   `json:"folder"`
+			From      string   `json:"from,omitempty"`
+			To        []string `json:"to"`
+			Cc        []string `json:"cc,omitempty"`
+			Bcc       []string `json:"bcc,omitempty"`
+			Subject   string   `json:"subject"`
+			InReplyTo string   `json:"in_reply_to,omitempty"`
+			Signature string   `json:"signature,omitempty"`
+		}{ID: result.ID, Folder: newFolder, From: addressText(from), To: nonNilStrings(msg.To), Cc: msg.Cc, Bcc: msg.Bcc,
+			Subject: msg.Subject, InReplyTo: msg.inReplyTo, Signature: signatureID})
 		return 0
 	}
 
@@ -871,8 +925,80 @@ func runMailDraft(stdout, stderr io.Writer, args []string, httpClient *http.Clie
 	if from != nil {
 		fields = append(fields, render.Field{Name: "from", Value: addressText(from)})
 	}
+	for _, pair := range []struct{ name, value string }{
+		{"to", addressListToString(msg.To)}, {"cc", addressListToString(msg.Cc)}, {"bcc", addressListToString(msg.Bcc)},
+		{"subject", msg.Subject}, {"in_reply_to", msg.inReplyTo}, {"signature", signatureID},
+	} {
+		if pair.value != "" {
+			fields = append(fields, render.Field{Name: pair.name, Value: pair.value})
+		}
+	}
 	render.KeyValueTable(stdout, fields)
 	return 0
+}
+
+// completeMailDraft does the requests a draft needs before it is saved: it checks --from
+// against the sender list, fills a reply from the original message, and adds the
+// signature and then the quote to the body. It returns the sender and the signature's
+// snippet id.
+func completeMailDraft(ctx context.Context, c *client.Client, sess client.Session, msg *mailSendInput, reply mailReplyOptions, signature string) (*mail.Address, string, *cliErrors.Error) {
+	var senders []mailSender
+	var from *mail.Address
+	if msg.From != "" || reply.active() {
+		var cerr *cliErrors.Error
+		if senders, cerr = fetchMailSenders(ctx, c, sess); cerr != nil {
+			return nil, "", cerr
+		}
+	}
+	if msg.From != "" {
+		parsed, err := parseFromValue(msg.From)
+		if err != nil {
+			return nil, "", invalidArgument(err.Error())
+		}
+		var cerr *cliErrors.Error
+		if from, cerr = matchSender(senders, parsed); cerr != nil {
+			return nil, "", cerr
+		}
+	}
+	signatureID := ""
+	if signature != "" {
+		text, id, cerr := fetchMailSignature(ctx, c, sess, signature, reply.active())
+		if cerr != nil {
+			return nil, "", cerr
+		}
+		msg.Body, signatureID = appendBodySection(msg.Body, text), id
+	}
+	if reply.active() {
+		suggested, cerr := prepareMailReply(ctx, c, sess, reply, msg, senders)
+		if cerr != nil {
+			return nil, "", cerr
+		}
+		if from == nil {
+			from = suggested
+		}
+		if err := validateDraftAddresses(*msg); err != nil {
+			return nil, "", invalidArgument(err.Error())
+		}
+	}
+	return from, signatureID, nil
+}
+
+// parseSignatureFlag reads --signature: a snippet id or "default".
+func parseSignatureFlag(f commandFlags) (string, *cliErrors.Error) {
+	value, given := f.Lookup("signature")
+	value = strings.TrimSpace(value)
+	if given && value == "" {
+		return "", invalidArgument("--signature must be a snippet id from snippet.list, or default")
+	}
+	return value, nil
+}
+
+// nonNilStrings gives [] instead of null for an empty list in JSON output.
+func nonNilStrings(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
 }
 
 func runMailMove(stdout, stderr io.Writer, args []string, httpClient *http.Client, baseURL, sessionPath string, getenv func(string) string) int {

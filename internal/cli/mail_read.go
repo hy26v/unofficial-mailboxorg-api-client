@@ -43,7 +43,8 @@ func init() {
 		Args: map[string]operations.ArgSpec{
 			"id":             {Type: "string", Required: true, Description: "message id"},
 			"folder":         {Type: "string", Required: true, Description: "folder id, e.g. \"default0/INBOX\""},
-			"body-format":    {Type: "string", Required: false, Description: "text (default; HTML converted to plain text) or html (provider-sanitized HTML)"},
+			"body-format":    {Type: "string", Required: false, Description: "text (default; HTML converted to plain text with line breaks and decoded entities) or html (provider-sanitized HTML)"},
+			"links":          {Type: "string", Required: false, Description: "links in a text body: clean (default; \"text (url)\" without tracking parameters such as utm_*, and no links without text), full (\"text (url)\" with every URL unchanged) or none (link text only)"},
 			"max-body-bytes": {Type: "int", Required: false, Description: "maximum body bytes returned, 1024-16777216 (default 262144); body_truncated reports a cut"},
 			"mark-seen":      {Type: "bool", Required: false, SideEffect: operations.SideEffectWrite, Description: "mark the message as seen; by default reading leaves the seen flag unchanged"},
 		},
@@ -106,6 +107,9 @@ type mailReadResult struct {
 	// NestedMessages are messages attached to this one as message/rfc822, such as a
 	// forwarded message. Their body text is not included.
 	NestedMessages []mailReadNestedMessage `json:"nested_messages"`
+	// headers holds the provider's other headers by lower-case name, for a reply's
+	// threading headers. It is never printed.
+	headers map[string][]string
 }
 
 // mailReadNestedMessage is one attached message from nested_msgs. OX sends it as a mail
@@ -131,16 +135,23 @@ type mailReadOptions struct {
 	id           string
 	folder       string
 	bodyFormat   string
+	links        mailLinkMode
 	maxBodyBytes int
 	markSeen     bool
 }
 
 func parseMailReadOptions(args []string) (mailReadOptions, *cliErrors.Error) {
-	opts := mailReadOptions{bodyFormat: "text", maxBodyBytes: mailReadDefaultMaxBodyBytes}
+	opts := mailReadOptions{bodyFormat: "text", links: mailLinksClean, maxBodyBytes: mailReadDefaultMaxBodyBytes}
 	f, ferr := parseCommandFlags("mail.read", args,
 		checkedFlag("body-format", func(value string) *cliErrors.Error {
 			if format := strings.TrimSpace(value); format != "text" && format != "html" {
 				return invalidArgument("--body-format must be text or html")
+			}
+			return nil
+		}),
+		checkedFlag("links", func(value string) *cliErrors.Error {
+			if _, ok := parseMailLinkMode(value); !ok {
+				return invalidArgument("--links must be clean, full or none")
 			}
 			return nil
 		}),
@@ -157,6 +168,12 @@ func parseMailReadOptions(args []string) (mailReadOptions, *cliErrors.Error) {
 	}
 	if maxBodyBytes, ok := f.Int("max-body-bytes"); ok {
 		opts.maxBodyBytes = maxBodyBytes
+	}
+	if links, ok := f.Lookup("links"); ok {
+		opts.links, _ = parseMailLinkMode(links)
+		if opts.bodyFormat == "html" {
+			return opts, invalidArgument("--links applies only to --body-format text")
+		}
 	}
 	opts.markSeen = f.Bool("mark-seen")
 	if opts.id == "" {
@@ -314,6 +331,9 @@ type mailReadRawMessage struct {
 	Flags        *int64            `json:"flags"`
 	Attachments  []mailReadRawPart `json:"attachments"`
 	NestedMsgs   []json.RawMessage `json:"nested_msgs"`
+	// Headers maps a header name to a string, or to a list of strings for a header that
+	// occurs more than once.
+	Headers map[string]json.RawMessage `json:"headers"`
 }
 
 type mailReadBodyPart struct {
@@ -395,6 +415,25 @@ func decodeMailReadHeaders(message mailReadRawMessage, subject *string, from, to
 	return nil
 }
 
+// decodeMailReadHeaderMap keeps the string values of the headers object by lower-case
+// name. Values of another type are left out.
+func decodeMailReadHeaderMap(raw map[string]json.RawMessage) map[string][]string {
+	headers := map[string][]string{}
+	for name, value := range raw {
+		key := strings.ToLower(name)
+		var one string
+		if json.Unmarshal(value, &one) == nil {
+			headers[key] = append(headers[key], one)
+			continue
+		}
+		var many []string
+		if json.Unmarshal(value, &many) == nil {
+			headers[key] = append(headers[key], many...)
+		}
+	}
+	return headers
+}
+
 // decodeMailReadNested decodes nested_msgs. Each nested message keeps its headers and file
 // attachments; its body text is not decoded.
 func decodeMailReadNested(raws []json.RawMessage, depth int) ([]mailReadNestedMessage, error) {
@@ -458,6 +497,7 @@ func fetchMailRead(ctx context.Context, c *client.Client, sess client.Session, o
 	if err := decodeMailReadHeaders(message, &result.Subject, &result.From, &result.To, &result.Cc, &result.Bcc, &result.SentDate, &result.ReceivedDate); err != nil {
 		return mailReadResult{}, err
 	}
+	result.headers = decodeMailReadHeaderMap(message.Headers)
 	result.Seen = opts.markSeen || *message.Flags&mailFlagSeen != 0
 	result.Flagged = *message.Flags&mailFlagFlagged != 0
 
@@ -477,11 +517,17 @@ func fetchMailRead(ctx context.Context, c *client.Client, sess client.Session, o
 		allHTML = allHTML && part.html
 	}
 	keepHTML := opts.bodyFormat == "html" && allHTML
+	links := opts.links
+	if links == "" {
+		links = mailLinksClean
+	}
 	texts := make([]string, 0, len(bodyParts))
 	for _, part := range bodyParts {
 		content := strings.ReplaceAll(part.content, "\r\n", "\n")
-		if part.html && !keepHTML {
-			content = htmlToText(content)
+		// The provider's text view can return a text/plain part as display HTML, with
+		// <br>, anchors and entities; it is converted like an HTML part.
+		if !keepHTML && (part.html || looksLikeDisplayHTML(content)) {
+			content = htmlToTextWithLinks(content, links)
 		}
 		texts = append(texts, content)
 	}
@@ -490,6 +536,9 @@ func fetchMailRead(ctx context.Context, c *client.Client, sess client.Session, o
 		result.BodyFormat = "html"
 	}
 	body := strings.Join(texts, "\n\n")
+	if !keepHTML && links != mailLinksFull {
+		body = cleanTextURLs(body)
+	}
 	result.BodyBytes = len(body)
 	if len(body) > opts.maxBodyBytes {
 		body = truncateUTF8(body, opts.maxBodyBytes)
@@ -704,8 +753,17 @@ var htmlBreakElements = map[string]bool{
 // end tag is described at skipHTMLElementContent; and a "<!--" without "-->" is dropped
 // alone.
 func htmlToText(value string) string {
+	return htmlToTextWithLinks(value, mailLinksNone)
+}
+
+// htmlToTextWithLinks is htmlToText that also shows link targets as mode selects: after
+// the text of an <a href> element it writes " (url)", as described at htmlLinkSuffix.
+func htmlToTextWithLinks(value string, mode mailLinkMode) string {
 	var text strings.Builder
 	inHead, headDone := false, false
+	// anchorHref and anchorStart describe the open <a> element: its href and where its
+	// text starts in text. anchorStart is -1 when no anchor is open.
+	anchorHref, anchorStart := "", -1
 	writeText := func(s string) {
 		if inHead {
 			if strings.TrimLeft(s, " \t\r\n\f") == "" {
@@ -742,6 +800,7 @@ func htmlToText(value string) string {
 			writeText(value[i:])
 			break
 		}
+		tag := value[i:end]
 		i = end
 		if inHead {
 			switch {
@@ -755,6 +814,11 @@ func htmlToText(value string) string {
 			}
 		}
 		switch {
+		case name == "a" && !closing && !selfClosing:
+			anchorHref, anchorStart = htmlTagAttribute(tag, "href"), text.Len()
+		case name == "a" && closing && anchorStart >= 0:
+			text.WriteString(htmlLinkSuffix(text.String()[anchorStart:], anchorHref, mode))
+			anchorHref, anchorStart = "", -1
 		case name == "br" || (closing && htmlBreakElements[name]):
 			text.WriteByte('\n')
 		case !closing && name == "head" && !inHead && !headDone && !selfClosing:

@@ -38,7 +38,7 @@ func senderServer(t *testing.T) *testutil.Server {
 
 func TestMailSenders_ListsAddressesWithDefaultAndVariants(t *testing.T) {
 	srv := senderServer(t)
-	stdout, stderr, code := run(t, srv, senderEnv, []string{"mail", "senders", "--llm"})
+	stdout, stderr, code := run(t, srv, senderEnv, []string{"mail", "senders", "--variants", "--llm"})
 	if code != 0 {
 		t.Fatalf("exit code = %d; stderr=%s", code, stderr)
 	}
@@ -79,6 +79,40 @@ func TestMailSenders_ListsAddressesWithDefaultAndVariants(t *testing.T) {
 	}
 }
 
+func TestMailSenders_HidesVariantsAndFiltersByQuery(t *testing.T) {
+	srv := senderServer(t)
+	stdout, stderr, code := run(t, srv, senderEnv, []string{"mail", "senders", "--llm"})
+	if want := `"hidden_variants":2`; code != 0 || !strings.Contains(stdout, want) || strings.Contains(stdout, "secure.mailbox.org") || strings.Contains(stdout, "tls.mailbox.org") {
+		t.Fatalf("code %d, stdout = %q, stderr = %q; want no variants and %s", code, stdout, stderr, want)
+	}
+	stdout, _, code = run(t, srv, senderEnv, []string{"mail", "senders", "--query", "EXAMPLE.org", "--format", "values", "--select", "address"})
+	if code != 0 || stdout != "alias@example.org\nteam@example.org\n" {
+		t.Fatalf("query: code %d, stdout = %q", code, stdout)
+	}
+	stdout, _, code = run(t, srv, senderEnv, []string{"mail", "senders", "--query", "work name", "--format", "values", "--select", "address"})
+	if code != 0 || stdout != "me@work.example\n" {
+		t.Fatalf("query by name: code %d, stdout = %q", code, stdout)
+	}
+	if _, stderr, code := run(t, srv, senderEnv, []string{"mail", "senders", "--query", " ", "--llm"}); code != 4 || !strings.Contains(stderr, "--query must not be blank") {
+		t.Fatalf("blank query: code %d, stderr = %q", code, stderr)
+	}
+}
+
+func TestMailSenders_KeepsADefaultVariantAndAVariantWithoutItsBase(t *testing.T) {
+	senders := []mailSender{
+		{Address: "a@mailbox.org"}, {Address: "a@secure.mailbox.org", MailboxOrgVariant: "secure", Default: true},
+		{Address: "b@tls.mailbox.org", MailboxOrgVariant: "tls"}, {Address: "a@tls.mailbox.org", MailboxOrgVariant: "tls"},
+	}
+	kept, hidden := filterMailSenders(senders, "", false)
+	var addresses []string
+	for _, s := range kept {
+		addresses = append(addresses, s.Address)
+	}
+	if strings.Join(addresses, ",") != "a@mailbox.org,a@secure.mailbox.org,b@tls.mailbox.org" || hidden != 1 {
+		t.Errorf("kept %v, hidden %d", addresses, hidden)
+	}
+}
+
 func TestMailSenders_DefaultFallsBackToPrimary(t *testing.T) {
 	srv := senderServer(t)
 	srv.Handle("/ajax/jslob", "list", testutil.Response{Body: map[string]any{"data": []any{
@@ -107,7 +141,7 @@ func TestMailDraft_FromAliasAddsFromHeader(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d; stderr=%s", code, stderr)
 	}
-	if want := `{"id":"7","folder":"default0/Drafts","from":"Owner Name <team@example.org>"}` + "\n"; stdout != want {
+	if want := `{"id":"7","folder":"default0/Drafts","from":"Owner Name <team@example.org>","to":["a@example.org"],"subject":"hi"}` + "\n"; stdout != want {
 		t.Errorf("stdout = %q, want %q", stdout, want)
 	}
 	req := draftRequest(t, srv)

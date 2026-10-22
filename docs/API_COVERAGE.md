@@ -9,7 +9,16 @@ and `mail.move-many`. The `mail.search`, `mail.read`, and `mail.attachment` oper
 live runner's safe section covers them, but no recorded live run includes them yet.
 `mail.senders` (read-only) was added later still, with `--from` on `mail.send` and
 `mail.draft`, and then `mail.correspondents` (read-only); no recorded live run includes
-them yet.
+them yet. Live checks on 2026-10-22 covered these later arguments, including one saved
+and removed reply draft, but not a configured default signature: `--links` on
+`mail.read` (the provider's text view returns most `text/plain` parts as display HTML),
+`--from-domain` and `--skip-trash` on
+`mail.list` and `mail.search` (`--skip-trash` reads `trash_fullname` and
+`spam_fullname`, or `trash` and `spam` when those are empty as on mailbox.org, with
+`account?action=get`), `--query` and `--variants` on `mail.senders`,
+the reply arguments of `mail.draft` (Message-ID from the `headers` object of
+`mail?action=get`, or from the message source with `src=1`), and `--signature` on
+`mail.draft` and `mail.send` (`snippet?action=get`).
 
 Coverage here means the supported `mbx` surface, not every module exposed by the much
 larger Open-Xchange platform. The actions below are intentionally absent because the

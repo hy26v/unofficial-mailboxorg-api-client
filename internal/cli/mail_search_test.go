@@ -505,3 +505,84 @@ func TestMailSearch_AllWithLimitPagesLikeLimit(t *testing.T) {
 		t.Errorf("columns = %s, want the default columns plus to; from is always returned", columns)
 	}
 }
+
+func TestMailSearch_ReturnsTheFolderByDefault(t *testing.T) {
+	srv := newMailSearchServer(t, mailSearchRows(1))
+	defer srv.Close()
+	stdout, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--query", "invoice", "--llm"})
+	if code != 0 || !strings.Contains(stdout, `"folder":"default0/INBOX"`) {
+		t.Fatalf("code %d, stdout = %s, stderr = %s; want the folder", code, stdout, stderr)
+	}
+	stdout, _, code = run(t, srv, mailSearchEnv, []string{"mail", "search", "--query", "invoice"})
+	if code != 0 || !strings.Contains(stdout, "folder") || !strings.Contains(stdout, "default0/INBOX") {
+		t.Errorf("human output = %q, want a folder column", stdout)
+	}
+}
+
+func TestMailSearch_FromDomainFiltersOnTheServerAndExactly(t *testing.T) {
+	rows := mailSearchRows(3)
+	rows[1].([]any)[2] = []any{[]any{"Grants", "startups@example.org"}}
+	rows[2].([]any)[2] = []any{[]any{nil, "news@mail.example.org"}}
+	srv := newMailSearchServer(t, rows)
+	defer srv.Close()
+	stdout, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--query", "grant", "--from-domain", "@Example.org", "--llm"})
+	if code != 0 {
+		t.Fatalf("exit code = %d; stderr=%s", code, stderr)
+	}
+	var document mailListDocument
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil || document.Count != 2 || document.Items[0].From != "billing1@example.org" || document.Items[1].From != "startups@example.org" {
+		t.Errorf("stdout = %s, want only the senders at example.org", stdout)
+	}
+	body, _ := io.ReadAll(srv.Requests()[1].Body)
+	if !strings.Contains(string(body), `["=",{"field":"from"},"example.org"]`) {
+		t.Errorf("search body = %s, want the sender domain term", body)
+	}
+}
+
+func TestMailSearch_SkipTrashLeavesOutTrashAndSpam(t *testing.T) {
+	srv := newMailSearchServer(t, mailSearchRows(1))
+	defer srv.Close()
+	srv.Handle("/ajax/folders", "list", testutil.Response{Body: map[string]any{"data": []any{
+		[]any{"default0/INBOX", "Inbox", "mail", 1, false},
+		[]any{"default0/Trash", "Trash", "mail", 1, false},
+		[]any{"default0/Trash/Old", "Old", "mail", 1, false},
+		[]any{"default0/Junk", "Junk", "mail", 1, false},
+		[]any{"default0/Trashy", "Trashy", "mail", 1, false},
+	}}})
+	srv.Handle("/ajax/account", "get", testutil.Response{Body: map[string]any{"data": map[string]any{
+		"id": 0, "trash_fullname": "Trash", "spam_fullname": "Junk",
+	}}})
+	stdout, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--query", "invoice", "--folder", "1", "--recursive", "--skip-trash", "--llm"})
+	if code != 0 {
+		t.Fatalf("exit code = %d; stderr=%s; stdout=%s", code, stderr, stdout)
+	}
+	var searched []string
+	for _, req := range srv.Requests() {
+		if req.URL.Query().Get("action") == "search" {
+			searched = append(searched, req.URL.Query().Get("folder"))
+		}
+	}
+	if strings.Join(searched, ",") != "default0/INBOX,default0/Trashy" {
+		t.Errorf("searched folders = %v, want Trash, its subfolder and Spam left out", searched)
+	}
+	// mailbox.org leaves the *_fullname fields empty and names the folders in trash and spam.
+	srv.Handle("/ajax/account", "get", testutil.Response{Body: map[string]any{"data": map[string]any{
+		"id": 0, "trash_fullname": "", "spam_fullname": "", "trash": "Trash", "spam": "Junk",
+	}}})
+	searched = nil
+	before := len(srv.Requests())
+	if _, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--query", "invoice", "--folder", "1", "--recursive", "--skip-trash", "--llm"}); code != 0 {
+		t.Fatalf("names only: code %d, stderr=%s", code, stderr)
+	}
+	for _, req := range srv.Requests()[before:] {
+		if req.URL.Query().Get("action") == "search" {
+			searched = append(searched, req.URL.Query().Get("folder"))
+		}
+	}
+	if strings.Join(searched, ",") != "default0/INBOX,default0/Trashy" {
+		t.Errorf("names only: searched folders = %v, want Trash, its subfolder and Junk left out", searched)
+	}
+	if _, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--query", "invoice", "--skip-trash", "--llm"}); code != 4 || !strings.Contains(stderr, "--skip-trash needs --recursive") {
+		t.Errorf("without --recursive: code %d, stderr = %s", code, stderr)
+	}
+}

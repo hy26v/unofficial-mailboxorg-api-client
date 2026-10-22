@@ -41,7 +41,7 @@
     {"name": "mbx_mail_correspondents", "description": "Find the email addresses of a person or company in past mail"},
     {"name": "mbx_mail_read", "description": "Read one message's body text and attachment list"},
     {"name": "mbx_mail_senders", "description": "List the addresses the account may send from"},
-    {"name": "mbx_mail_draft", "description": "Save a message in Drafts without sending it (not offered in read-only mode)"},
+    {"name": "mbx_mail_draft", "description": "Save a message or a threaded reply in Drafts without sending it (not offered in read-only mode)"},
     {"name": "mbx_mail_move", "description": "Move one message, for example to the trash (not offered in read-only mode)"},
     {"name": "mbx_events_list", "description": "List calendar events, by default for the next 30 days"},
     {"name": "mbx_contacts_list", "description": "List contacts of the default address book"}

@@ -47,6 +47,10 @@ var mailListDefaultFields = map[string]bool{"id": true, "subject": true, "from":
 
 var mailListOnRequestFields = []string{"folder", "to", "cc", "size", "sent_date", "received_date", "attachment", "seen", "flagged"}
 
+// mailSearchOnRequestFields are mailListOnRequestFields without folder: mail search always
+// returns the folder, which mail read needs with the id.
+var mailSearchOnRequestFields = []string{"to", "cc", "size", "sent_date", "received_date", "attachment", "seen", "flagged"}
+
 func init() {
 	registerResource("mail", runMail)
 	operations.Register(operations.Operation{
@@ -68,7 +72,9 @@ func init() {
 			"page-size":        {Type: "int", Required: false, Description: "provider page size for --all or filtered scans, 1-200 (default 200)"},
 			"fields":           {Type: "string", Required: false, Description: "comma-separated extra safe fields: folder,to,cc,size,sent_date,received_date,attachment,seen,flagged (id, subject, from and date are always returned)"},
 			"recursive":        {Type: "bool", Required: false, Description: "scan the folder and all mail subfolders; implies --all, and with --limit returns the newest matches"},
+			"skip-trash":       {Type: "bool", Required: false, Description: "with --recursive, leave out the Trash and Spam folders and their subfolders"},
 			"from":             {Type: "string", Required: false, Description: "case-insensitive exact sender-address filter"},
+			"from-domain":      {Type: "string", Required: false, Description: "sender domain filter, with or without leading @, for example example.org"},
 			"to-domain":        {Type: "string", Required: false, Description: "recipient domain filter, with or without leading @"},
 			"fit":              {Type: "bool", Required: false, Description: "when the result exceeds --max-output-bytes, return the newest messages that fit, with has_more, available and next_cursor, instead of failing"},
 			"since":            {Type: "string", Required: false, Description: "inclusive received_date lower bound in RFC3339"},
@@ -103,9 +109,11 @@ func init() {
 			"cursor":           {Type: "string", Required: false, Description: "opaque next_cursor from a prior result"},
 			"all":              {Type: "bool", Required: false, Description: "return every match (use --format jsonl or --output for large results; --fit trims what does not fit)"},
 			"page-size":        {Type: "int", Required: false, Description: "local page size for --all or filtered scans, 1-200 (default 200)"},
-			"fields":           {Type: "string", Required: false, Description: "comma-separated extra safe fields: folder,to,cc,size,sent_date,received_date,attachment,seen,flagged (id, subject, from and date are always returned)"},
+			"fields":           {Type: "string", Required: false, Description: "comma-separated extra safe fields: to,cc,size,sent_date,received_date,attachment,seen,flagged (id, folder, subject, from and date are always returned)"},
 			"recursive":        {Type: "bool", Required: false, Description: "search the folder and all mail subfolders; implies --all, and with --limit returns the newest matches"},
+			"skip-trash":       {Type: "bool", Required: false, Description: "with --recursive, leave out the Trash and Spam folders and their subfolders"},
 			"from":             {Type: "string", Required: false, Description: "case-insensitive exact sender-address filter applied to matches"},
+			"from-domain":      {Type: "string", Required: false, Description: "sender domain filter applied to matches, with or without leading @, for example example.org; --query can then be any word of the wanted mail"},
 			"to-domain":        {Type: "string", Required: false, Description: "recipient domain filter applied to matches, with or without leading @"},
 			"fit":              {Type: "bool", Required: false, Description: "when the result exceeds --max-output-bytes, return the newest matches that fit, with has_more, available and next_cursor, instead of failing"},
 			"since":            {Type: "string", Required: false, Description: "inclusive received_date lower bound in RFC3339"},
@@ -117,7 +125,7 @@ func init() {
 			Type:            "array",
 			Fields:          []string{"id", "folder", "subject", "from", "to", "cc", "date", "sent_date", "received_date", "size", "attachment", "seen", "flagged"},
 			ScalarFields:    []string{"id", "folder", "subject", "from", "date", "sent_date", "received_date", "size", "attachment", "seen", "flagged"},
-			OnRequestFields: mailListOnRequestFields,
+			OnRequestFields: mailSearchOnRequestFields,
 			OnRequestArg:    "fields",
 		},
 	})
@@ -256,8 +264,10 @@ type mailListOptions struct {
 	pageSize       int
 	fields         []string
 	recursive      bool
+	skipTrash      bool
 	from           string
 	fromSet        bool
+	fromDomain     string
 	toDomain       string
 	since          *time.Time
 	until          *time.Time
@@ -320,8 +330,10 @@ func parseMailListOptionsFor(args []string, search bool) (mailListOptions, *cliE
 		opts.fields, _ = parseMailListFields(fields)
 	}
 	opts.recursive = f.Bool("recursive")
+	opts.skipTrash = f.Bool("skip-trash")
 	from, fromSet := f.Lookup("from")
 	opts.from, opts.fromSet = strings.TrimSpace(from), fromSet
+	opts.fromDomain = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(f.String("from-domain")), "@"))
 	opts.toDomain = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(f.String("to-domain")), "@"))
 	if since, ok := f.Lookup("since"); ok {
 		parsed, _ := time.Parse(time.RFC3339, since)
@@ -364,6 +376,12 @@ func parseMailListOptionsFor(args []string, search bool) (mailListOptions, *cliE
 	if _, given := f.Lookup("to-domain"); given && opts.toDomain == "" {
 		return opts, invalidArgument("--to-domain must not be blank")
 	}
+	if _, given := f.Lookup("from-domain"); given && opts.fromDomain == "" {
+		return opts, invalidArgument("--from-domain must not be blank")
+	}
+	if opts.skipTrash && !opts.recursive {
+		return opts, invalidArgument("--skip-trash needs --recursive")
+	}
 	if opts.fromSet && opts.from == "" {
 		return opts, invalidArgument("--from must not be blank")
 	}
@@ -387,6 +405,11 @@ func parseMailListOptionsFor(args []string, search bool) (mailListOptions, *cliE
 			searchIn, _ = parseMailSearchFields(in)
 		}
 		opts.searchFilter = mailSearchFilter(terms, searchIn)
+		if opts.fromDomain != "" {
+			// The provider matches the domain as a substring of the sender; the local
+			// filter then keeps only exact sender domains.
+			opts.searchFilter = []any{"and", opts.searchFilter, []any{"=", map[string]string{"field": "from"}, opts.fromDomain}}
+		}
 	}
 	return opts, nil
 }
@@ -499,7 +522,7 @@ func decodeMailListRows(rows [][]json.RawMessage, folder string, columns []mailL
 			return nil, &cliErrors.Error{Code: "invalid_response", Message: "could not decode mail list row: " + err.Error()}
 		}
 		item.Folder = ""
-		if opts.recursive || requestedMailListField(opts, "folder") {
+		if opts.recursive || opts.search || requestedMailListField(opts, "folder") {
 			item.Folder = folder
 		}
 		items = append(items, item)
@@ -626,6 +649,12 @@ func mailListMatches(item mailListItem, opts mailListOptions) bool {
 	if opts.from != "" && !strings.EqualFold(item.From, opts.from) {
 		return false
 	}
+	if opts.fromDomain != "" {
+		at := strings.LastIndex(item.From, "@")
+		if at < 0 || !strings.EqualFold(item.From[at+1:], opts.fromDomain) {
+			return false
+		}
+	}
 	if opts.toDomain != "" {
 		matched := false
 		for _, address := range item.To {
@@ -653,7 +682,7 @@ func mailListMatches(item mailListItem, opts mailListOptions) bool {
 }
 
 func hasMailListFilters(opts mailListOptions) bool {
-	return opts.from != "" || opts.toDomain != "" || opts.since != nil || opts.until != nil
+	return opts.from != "" || opts.fromDomain != "" || opts.toDomain != "" || opts.since != nil || opts.until != nil
 }
 
 func collectFolderMail(c *client.Client, sess client.Session, folder string, opts mailListOptions, columns []mailListColumn) ([]mailListItem, bool, int, error) {
@@ -739,6 +768,55 @@ func recursiveMailScanFolders(c *client.Client, sess client.Session, root string
 	return folders, nil
 }
 
+// withoutTrashAndSpam leaves the primary account's Trash and Spam folders, and their
+// subfolders, out of a recursive scan. The account names them in trash_fullname and
+// spam_fullname, or, as on mailbox.org, where those are empty, in trash and spam;
+// without either, default0/Trash is left out.
+func withoutTrashAndSpam(c *client.Client, sess client.Session, folders []string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+	data, err := c.Do(ctx, http.MethodGet, "/account", "get", sess, url.Values{"id": {"0"}})
+	if err != nil {
+		return nil, err
+	}
+	var account struct {
+		TrashFullname string `json:"trash_fullname"`
+		SpamFullname  string `json:"spam_fullname"`
+		Trash         string `json:"trash"`
+		Spam          string `json:"spam"`
+	}
+	if err := json.Unmarshal(data, &account); err != nil {
+		return nil, &cliErrors.Error{Code: "invalid_response", Message: "could not decode the mail account for --skip-trash"}
+	}
+	var skipped []string
+	for _, names := range [][2]string{{account.TrashFullname, account.Trash}, {account.SpamFullname, account.Spam}} {
+		name := strings.Trim(strings.TrimSpace(names[0]), "/")
+		if name == "" {
+			name = strings.Trim(strings.TrimSpace(names[1]), "/")
+		}
+		if name != "" {
+			skipped = append(skipped, "default0/"+name)
+		}
+	}
+	if len(skipped) == 0 || strings.TrimSpace(account.TrashFullname+account.Trash) == "" {
+		skipped = append(skipped, mailTrashDefaultFolder)
+	}
+	kept := folders[:0:0]
+	for _, folder := range folders {
+		skip := false
+		for _, root := range skipped {
+			if strings.EqualFold(folder, root) || strings.HasPrefix(strings.ToLower(folder), strings.ToLower(root)+"/") {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			kept = append(kept, folder)
+		}
+	}
+	return kept, nil
+}
+
 type mailListDocument struct {
 	Items      []mailListItem `json:"items"`
 	Truncated  bool           `json:"truncated"`
@@ -777,6 +855,9 @@ func runMailListMode(stdout, stderr io.Writer, args []string, httpClient *http.C
 	if opts.recursive {
 		var err error
 		folders, err = recursiveMailScanFolders(c, sess, opts.folder)
+		if err == nil && opts.skipTrash {
+			folders, err = withoutTrashAndSpam(c, sess, folders)
+		}
 		if err != nil {
 			cerr := toCLIError(err, "api_error")
 			writeErr(stderr, opts.llm, cerr)
@@ -894,14 +975,16 @@ func emitMailListDocument(stdout, stderr io.Writer, opts mailListOptions, docume
 		_, _ = stdout.Write(payload)
 		return 0
 	}
-	header := []string{"id", "subject", "from", "date"}
-	for _, field := range opts.fields {
-		header = append(header, field)
+	extraFields := opts.fields
+	if opts.search && !requestedMailListField(opts, "folder") {
+		extraFields = append([]string{"folder"}, extraFields...)
 	}
+	header := []string{"id", "subject", "from", "date"}
+	header = append(header, extraFields...)
 	rows := make([][]string, len(document.Items))
 	for i, item := range document.Items {
 		row := []string{item.ID, item.Subject, item.From, item.Date}
-		for _, field := range opts.fields {
+		for _, field := range extraFields {
 			row = append(row, mailListHumanField(item, field))
 		}
 		rows[i] = row

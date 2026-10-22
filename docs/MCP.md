@@ -62,7 +62,7 @@ claude mcp add mbx -- mbx mcp
 ## Claude Desktop
 
 Each release has one Claude Desktop extension per platform, for example
-`mbx-v0.2.0-darwin-arm64.mcpb`. Open the file for your platform with Claude Desktop, or
+`mbx-v0.3.0-darwin-arm64.mcpb`. Open the file for your platform with Claude Desktop, or
 drag it into Settings > Extensions. The extension asks for your mailbox.org address, an
 optional password and read-only mode, which is on by default. Leave the password empty
 to use the session from `mbx login`. Claude Desktop keeps the password in the system
