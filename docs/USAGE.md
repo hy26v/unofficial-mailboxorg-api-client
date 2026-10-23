@@ -102,19 +102,27 @@ mbx mail list --folder default0/INBOX --cursor offset:20 --limit 20 --llm
 mbx mail list --folder default0/INBOX --all --page-size 200 \
   --fields to,seen,flagged,attachment,sent_date,received_date --format jsonl
 
-# Search subjects, addresses and body text on the server, in every mail folder.
-mbx mail search --query 'invoice "March 2026"' --folder 1 --all --recursive \
-  --fields folder --format tsv --select id,folder,subject,from,date
+# Search subjects, addresses and body text on the server, in every mail folder except
+# Trash, Spam and Drafts (folder "all", the default). Follow next_cursor for more.
+mbx mail search --query 'invoice "March 2026"' --limit 50 \
+  --format tsv --select id,folder,subject,from,from_name,date
+mbx mail search --query 'invoice "March 2026"' --limit 50 --cursor <next_cursor> --llm
 
 # Search only the address fields (from, to, cc and bcc); --select to also requests to.
 mbx mail search --query example.org --in address --format json --select id,from,to
 
-# Find a person's or company's addresses in all past mail, most messages first.
+# Find a person's or company's addresses in past mail, most messages first, with counts
+# and last dates per role: from_count and last_from tell whether the address ever wrote.
 mbx mail correspondents --query example.org
 
-# Read one message's body and attachment list (it stays unread), then save an attachment.
+# Read one message's body and attachment list (it stays unread), then read an attachment
+# as text (PDF, DOCX, XLSX, ODT, HTML, text) or save it.
 mbx mail read --folder default0/INBOX --id 1234 --format json --select subject,body,attachments
+mbx mail attachment --folder default0/INBOX --id 1234 --attachment 2
 mbx mail attachment --folder default0/INBOX --id 1234 --attachment 2 --save-to ./invoice.pdf
+
+# List the conversation of a message, oldest first, from every folder, Sent included.
+mbx mail thread --folder default0/INBOX --id 1234
 
 # Headerless values, useful for shell pipelines and agents.
 mbx commands --format values --select name
@@ -124,9 +132,12 @@ mbx commands tasks --format values --select name
 `--llm` remains the backward-compatible compact JSON mode. `--select` supports dotted
 paths and is validated against each operation's documented output before a mutation is
 sent. In `mail list` and `mail search`, a selected field that only `--fields` returns
-(such as `to` or `folder`) is added to `--fields`. `--recursive` implies `--all`, and with `--limit` it
-returns the newest matches of all folders; `--all` with `--limit` and without
-`--recursive` pages like `--limit` alone. A JSON projection of an incomplete
+(such as `to` or `folder`) is added to `--fields`. `--recursive` (and folder `all`)
+returns the newest `--limit` matches of all folders (default 20), or every match with
+`--all`, and its `next_cursor` continues at the next message; `--all` with `--limit` and
+without `--recursive` pages like `--limit` alone. `truncated` is the same as `has_more`.
+Message ids are unique only within their folder, so always give an id with its folder.
+A JSON projection of an incomplete
 list keeps `has_more`, `truncated` and `next_cursor`. With `--fit`, `mail list` and
 `mail search` return the newest messages that fit in `--max-output-bytes`, with
 `available` (the number before trimming) and a `next_cursor` that resumes after them,

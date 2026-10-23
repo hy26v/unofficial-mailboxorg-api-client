@@ -17,6 +17,7 @@ type Server struct {
 
 	mu        sync.Mutex
 	responses map[string]Response
+	funcs     map[string]func(*http.Request) Response
 	requests  []*http.Request
 }
 
@@ -30,7 +31,7 @@ type Response struct {
 // NewServer starts a fake OX middleware server. Register responses with Handle before
 // issuing requests; unregistered module/action pairs return 404.
 func NewServer() *Server {
-	s := &Server{responses: make(map[string]Response)}
+	s := &Server{responses: make(map[string]Response), funcs: make(map[string]func(*http.Request) Response)}
 	s.Server = httptest.NewServer(http.HandlerFunc(s.serve))
 	return s
 }
@@ -41,6 +42,14 @@ func (s *Server) Handle(module, action string, resp Response) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.responses[module+"?action="+action] = resp
+}
+
+// HandleFunc registers a function that builds the response for a given module and action
+// from the request, for example from its folder parameter. It takes precedence over Handle.
+func (s *Server) HandleFunc(module, action string, fn func(*http.Request) Response) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.funcs[module+"?action="+action] = fn
 }
 
 // Requests returns all requests received so far, in order.
@@ -66,7 +75,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	s.requests = append(s.requests, stored)
 	key := r.URL.Path + "?action=" + r.URL.Query().Get("action")
 	resp, ok := s.responses[key]
+	fn := s.funcs[key]
 	s.mu.Unlock()
+	if fn != nil {
+		resp, ok = fn(r), true
+	}
 
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)

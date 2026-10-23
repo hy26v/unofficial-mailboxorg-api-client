@@ -1,6 +1,6 @@
 {
   "name": "mbx",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "mailbox.org mail, calendar, contacts, tasks and files through the unofficial mbx CLI and its MCP server",
   "author": {
     "name": "the mbx contributors"

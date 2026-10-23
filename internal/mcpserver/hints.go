@@ -34,7 +34,7 @@ func (h *handlers) hintFor(op operations.Operation, task *taskTool) argHint {
 	if task != nil {
 		hint.Tool = task.Name
 		names := map[string]bool{}
-		for _, name := range task.Args {
+		for _, name := range task.args(op) {
 			names[name] = true
 		}
 		offered = func(name string) bool { return names[name] }

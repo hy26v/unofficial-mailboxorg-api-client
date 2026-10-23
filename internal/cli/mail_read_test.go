@@ -189,13 +189,16 @@ func TestMailRead_Validation(t *testing.T) {
 		args []string
 		want string
 	}{
-		"missing id":            {[]string{"mail", "read", "--folder", "default0/INBOX", "--llm"}, "--id is required"},
-		"missing folder":        {[]string{"mail", "read", "--id", "7", "--llm"}, "--folder is required"},
-		"bad format":            {[]string{"mail", "read", "--id", "7", "--folder", "f", "--body-format", "raw", "--llm"}, "--body-format must be text or html"},
-		"small cap":             {[]string{"mail", "read", "--id", "7", "--folder", "f", "--max-body-bytes", "10", "--llm"}, "--max-body-bytes must be an integer between 1024"},
-		"unknown flag":          {[]string{"mail", "read", "--id", "7", "--folder", "f", "--raw", "--llm"}, "unknown flag: --raw"},
-		"attachment no save-to": {[]string{"mail", "attachment", "--id", "7", "--folder", "f", "--attachment", "2", "--llm"}, "--save-to is required"},
-		"attachment no id":      {[]string{"mail", "attachment", "--id", "7", "--folder", "f", "--save-to", "x", "--llm"}, "--attachment is required"},
+		"missing id":               {[]string{"mail", "read", "--folder", "default0/INBOX", "--llm"}, "--id is required"},
+		"missing folder":           {[]string{"mail", "read", "--id", "7", "--llm"}, "--folder is required"},
+		"bad format":               {[]string{"mail", "read", "--id", "7", "--folder", "f", "--body-format", "raw", "--llm"}, "--body-format must be text or html"},
+		"small cap":                {[]string{"mail", "read", "--id", "7", "--folder", "f", "--max-body-bytes", "10", "--llm"}, "--max-body-bytes must be an integer between 1024"},
+		"unknown flag":             {[]string{"mail", "read", "--id", "7", "--folder", "f", "--raw", "--llm"}, "unknown flag: --raw"},
+		"attachment bad content":   {[]string{"mail", "attachment", "--id", "7", "--folder", "f", "--attachment", "2", "--content", "raw", "--llm"}, "--content must be text or base64"},
+		"attachment save and cap":  {[]string{"mail", "attachment", "--id", "7", "--folder", "f", "--attachment", "2", "--save-to", "x", "--max-bytes", "2000", "--llm"}, "apply only without it"},
+		"attachment base64 offset": {[]string{"mail", "attachment", "--id", "7", "--folder", "f", "--attachment", "2", "--content", "base64", "--offset", "5", "--llm"}, "--offset applies only to --content text"},
+		"attachment small cap":     {[]string{"mail", "attachment", "--id", "7", "--folder", "f", "--attachment", "2", "--max-bytes", "10", "--llm"}, "--max-bytes must be an integer between 1024"},
+		"attachment no id":         {[]string{"mail", "attachment", "--id", "7", "--folder", "f", "--save-to", "x", "--llm"}, "--attachment is required"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			stdout, stderr, code := run(t, srv, mailReadEnv, tc.args)

@@ -3,8 +3,10 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,5 +50,16 @@ func TestToCLIErrorDoesNotExposeSessionFromWrappedGuardFailure(t *testing.T) {
 	}
 	if strings.Contains(got.Message, "super-secret") || strings.Contains(got.Message, "session=") {
 		t.Errorf("structured guard error exposed request URL: %q", got.Message)
+	}
+}
+
+func TestToCLIError_TransportFailureIsARetryableNetworkError(t *testing.T) {
+	err := &url.Error{Op: "Get", URL: "https://office.mailbox.org/ajax/mail?session=secret-session", Err: context.DeadlineExceeded}
+	got := toCLIError(err, "api_error")
+	if got.Code != "network_error" || !got.Retryable || strings.Contains(got.Message, "secret-session") {
+		t.Errorf("error = %+v, want a retryable network_error without the URL", got)
+	}
+	if got := toCLIError(context.DeadlineExceeded, "api_error"); got.Code != "network_error" || !got.Retryable {
+		t.Errorf("deadline = %+v", got)
 	}
 }

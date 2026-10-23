@@ -28,9 +28,11 @@ import (
 const (
 	mailFlagSeen    = 32
 	mailFlagFlagged = 8
+	mailFlagDraft   = 4
 
 	mailDraftDefaultFolder = "default0/Drafts"
 	mailTrashDefaultFolder = "default0/Trash"
+	mailSentDefaultFolder  = "default0/Sent"
 )
 
 func init() {
@@ -182,15 +184,16 @@ func init() {
 			"reply-folder": {Type: "string", Required: false, Description: "folder id of the message to answer, with --reply-id"},
 			"reply-all":    {Type: "bool", Required: false, Description: "with --reply-id, also send to the other recipients of the original as cc"},
 			"quote":        {Type: "bool", Required: false, Description: "with --reply-id, add the original text, quoted with \"> \", after the body"},
+			"replace-id":   {Type: "string", Required: false, Description: "id of an earlier draft in the draft folder (--folder) that this draft replaces: to, cc, bcc, subject, from, body and the threading headers that are not given come from it, and after the new draft is saved the earlier one moves to Trash (replaced); not with --reply-id"},
 			"input":        {Type: "string", Required: false, Description: "structured input: a JSON object with from/to/cc/bcc/subject/body, or @file.json to read it from a file"},
 			"folder":       {Type: "string", Required: false, Description: "destination folder id (default \"default0/Drafts\")"},
 			"dry-run":      {Type: "bool", Required: false, Description: "validate and show the draft that would be saved, without saving it or reading the message to answer"},
 		},
 		Output: operations.OutputSpec{
 			Type:         "object",
-			Fields:       []string{"id", "folder", "from", "to", "cc", "bcc", "subject", "in_reply_to", "signature"},
-			ScalarFields: []string{"id", "folder", "from", "subject", "in_reply_to", "signature"},
-			DryRunFields: []string{"dry_run", "from", "to", "cc", "bcc", "subject", "folder", "reply_folder", "reply_id", "signature"},
+			Fields:       []string{"id", "folder", "from", "to", "cc", "bcc", "subject", "in_reply_to", "to_source", "signature", "replaced"},
+			ScalarFields: []string{"id", "folder", "from", "subject", "in_reply_to", "to_source", "signature"},
+			DryRunFields: []string{"dry_run", "from", "to", "cc", "bcc", "subject", "folder", "reply_folder", "reply_id", "replace_id", "signature"},
 		},
 	})
 }
@@ -210,6 +213,9 @@ type mailSendInput struct {
 	// Message-ID, and its References followed by that Message-ID.
 	inReplyTo  string
 	references []string
+	// toSource names where a reply or replacement draft's To came from: given,
+	// reply-to, from, original-recipients or replaced-draft.
+	toSource string
 }
 
 // buildMailSendInput merges structured --input with --to/--cc/--bcc/--subject/--body/--attach
@@ -693,6 +699,7 @@ type mailPreview struct {
 	Folder      string   `json:"folder,omitempty"`
 	ReplyFolder string   `json:"reply_folder,omitempty"`
 	ReplyID     string   `json:"reply_id,omitempty"`
+	ReplaceID   string   `json:"replace_id,omitempty"`
 	Signature   string   `json:"signature,omitempty"`
 }
 
@@ -728,7 +735,7 @@ func renderMailPreview(stdout io.Writer, llm bool, preview mailPreview) {
 		fields = append(fields, render.Field{Name: "attachments", Value: addressListToString(preview.Attachments)})
 	}
 	for _, pair := range []struct{ name, value string }{
-		{"folder", preview.Folder}, {"reply_folder", preview.ReplyFolder}, {"reply_id", preview.ReplyID}, {"signature", preview.Signature},
+		{"folder", preview.Folder}, {"reply_folder", preview.ReplyFolder}, {"reply_id", preview.ReplyID}, {"replace_id", preview.ReplaceID}, {"signature", preview.Signature},
 	} {
 		if pair.value != "" {
 			fields = append(fields, render.Field{Name: pair.name, Value: pair.value})
@@ -842,6 +849,15 @@ func runMailDraft(stdout, stderr io.Writer, args []string, httpClient *http.Clie
 	if cerr != nil {
 		return exitWithError(stderr, llm, cerr)
 	}
+	replaceID, replacing := f.Lookup("replace-id")
+	replaceID = strings.TrimSpace(replaceID)
+	switch {
+	case replacing && replaceID == "":
+		return exitWithError(stderr, llm, invalidArgument("--replace-id must be the id of an earlier draft in the draft folder"))
+	case replacing && reply.active():
+		return exitWithError(stderr, llm, invalidArgument("--replace-id cannot be combined with --reply-id: the earlier draft already has the threading headers; save a new reply draft to answer another message"))
+	}
+	_, bodyGiven := f.Lookup("body")
 
 	if err := validateRecipientAddresses(msg); err != nil {
 		return exitWithError(stderr, llm, invalidArgument(err.Error()))
@@ -859,7 +875,7 @@ func runMailDraft(stdout, stderr io.Writer, args []string, httpClient *http.Clie
 	if dryRun {
 		renderMailPreview(stdout, llm, mailPreview{
 			From: fromDisplay(msg.From), To: msg.To, Cc: msg.Cc, Bcc: msg.Bcc, Subject: msg.Subject, Folder: folder,
-			ReplyFolder: reply.folder, ReplyID: reply.id, Signature: signature,
+			ReplyFolder: reply.folder, ReplyID: reply.id, ReplaceID: replaceID, Signature: signature,
 		})
 		return 0
 	}
@@ -874,6 +890,19 @@ func runMailDraft(stdout, stderr io.Writer, args []string, httpClient *http.Clie
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
 
+	if replacing {
+		toGiven := len(msg.To) > 0
+		if cerr := fillFromReplacedDraft(ctx, c, sess, folder, replaceID, &msg, bodyGiven); cerr != nil {
+			return exitWithError(stderr, llm, cerr)
+		}
+		if err := validateDraftAddresses(msg); err != nil {
+			return exitWithError(stderr, llm, invalidArgument(err.Error()))
+		}
+		msg.toSource = mailToSourceReplaced
+		if toGiven {
+			msg.toSource = mailToSourceGiven
+		}
+	}
 	from, signatureID, cerr := completeMailDraft(ctx, c, sess, &msg, reply, signature)
 	if cerr != nil {
 		return exitWithError(stderr, llm, cerr)
@@ -903,21 +932,40 @@ func runMailDraft(stdout, stderr io.Writer, args []string, httpClient *http.Clie
 		return cliErrors.ExitCodeFor(cerr)
 	}
 
+	// The earlier draft moves to Trash only after the new one is saved, so a failure
+	// leaves both drafts and loses nothing.
+	var replaced *mailDraftReplaced
+	var moveErr *cliErrors.Error
+	if replacing {
+		moved, cerr := moveReplacedDraft(ctx, c, sess, folder, replaceID)
+		if cerr != nil {
+			moveErr = cerr
+			moveErr.Message = fmt.Sprintf("the new draft is saved as id %s in %s, but moving the replaced draft %s to Trash failed: %s; move it with mail.move, and do not save the draft again", result.ID, newFolder, replaceID, cerr.Message)
+		} else {
+			replaced = &moved
+		}
+	}
+
 	// The result repeats the recipients and subject, so a caller can check the draft
 	// without reading it again.
 	if llm {
 		render.CompactJSON(stdout, struct {
-			ID        string   `json:"id"`
-			Folder    string   `json:"folder"`
-			From      string   `json:"from,omitempty"`
-			To        []string `json:"to"`
-			Cc        []string `json:"cc,omitempty"`
-			Bcc       []string `json:"bcc,omitempty"`
-			Subject   string   `json:"subject"`
-			InReplyTo string   `json:"in_reply_to,omitempty"`
-			Signature string   `json:"signature,omitempty"`
+			ID        string             `json:"id"`
+			Folder    string             `json:"folder"`
+			From      string             `json:"from,omitempty"`
+			To        []string           `json:"to"`
+			Cc        []string           `json:"cc,omitempty"`
+			Bcc       []string           `json:"bcc,omitempty"`
+			Subject   string             `json:"subject"`
+			InReplyTo string             `json:"in_reply_to,omitempty"`
+			ToSource  string             `json:"to_source,omitempty"`
+			Signature string             `json:"signature,omitempty"`
+			Replaced  *mailDraftReplaced `json:"replaced,omitempty"`
 		}{ID: result.ID, Folder: newFolder, From: addressText(from), To: nonNilStrings(msg.To), Cc: msg.Cc, Bcc: msg.Bcc,
-			Subject: msg.Subject, InReplyTo: msg.inReplyTo, Signature: signatureID})
+			Subject: msg.Subject, InReplyTo: msg.inReplyTo, ToSource: msg.toSource, Signature: signatureID, Replaced: replaced})
+		if moveErr != nil {
+			return exitWithError(stderr, llm, moveErr)
+		}
 		return 0
 	}
 
@@ -927,13 +975,19 @@ func runMailDraft(stdout, stderr io.Writer, args []string, httpClient *http.Clie
 	}
 	for _, pair := range []struct{ name, value string }{
 		{"to", addressListToString(msg.To)}, {"cc", addressListToString(msg.Cc)}, {"bcc", addressListToString(msg.Bcc)},
-		{"subject", msg.Subject}, {"in_reply_to", msg.inReplyTo}, {"signature", signatureID},
+		{"subject", msg.Subject}, {"in_reply_to", msg.inReplyTo}, {"to_source", msg.toSource}, {"signature", signatureID},
 	} {
 		if pair.value != "" {
 			fields = append(fields, render.Field{Name: pair.name, Value: pair.value})
 		}
 	}
+	if replaced != nil {
+		fields = append(fields, render.Field{Name: "replaced", Value: replaced.Folder + " " + replaced.ID + " moved to " + replaced.MovedTo})
+	}
 	render.KeyValueTable(stdout, fields)
+	if moveErr != nil {
+		return exitWithError(stderr, llm, moveErr)
+	}
 	return 0
 }
 

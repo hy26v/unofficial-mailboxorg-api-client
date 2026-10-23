@@ -60,11 +60,14 @@ Then work with your mailbox:
 
 ```sh
 mbx mail list --limit 10                                  # newest messages in the inbox
-mbx mail search --query invoice --folder 1 --recursive    # search every mail folder
-mbx mail read --folder default0/INBOX --id 1234           # body text and attachment list
+mbx mail search --query invoice                           # search every mail folder but Trash, Spam, Drafts
+mbx mail read --folder default0/INBOX --id 1234           # body text, attachment list, Reply-To
+mbx mail attachment --folder default0/INBOX --id 1234 --attachment 2   # the text of a PDF or DOCX
+mbx mail thread --folder default0/INBOX --id 1234         # the whole conversation, Sent included
 mbx mail correspondents --query example.org               # find someone's address
 mbx mail draft --to bob@example.com --subject Hi --body "Hello Bob"
 mbx mail draft --reply-id 1234 --reply-folder default0/INBOX --body "Thanks!"   # threaded reply
+mbx mail draft --replace-id 5678 --body "Thanks again!"   # revise a draft; the old one goes to Trash
 mbx events list                                           # the next 30 days
 mbx contacts list --format jsonl --select display_name,email
 ```

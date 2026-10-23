@@ -80,7 +80,7 @@ func newMailDatesServer(t *testing.T) (*httptest.Server, func() []string) {
 func TestMailDates_EveryDateRequestAsksForUTC(t *testing.T) {
 	for name, args := range map[string][]string{
 		"list":      {"mail", "list", "--llm"},
-		"search":    {"mail", "search", "--query", "dated", "--llm"},
+		"search":    {"mail", "search", "--folder", "default0/INBOX", "--query", "dated", "--llm"},
 		"get":       {"mail", "get", "--id", "7", "--folder", "default0/INBOX", "--llm"},
 		"read":      {"mail", "read", "--id", "7", "--folder", "default0/INBOX", "--llm"},
 		"move":      {"mail", "move", "--id", "7", "--folder", "default0/INBOX", "--to", "default0/Archive", "--verify", "--llm"},

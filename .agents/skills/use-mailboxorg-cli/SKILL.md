@@ -21,7 +21,7 @@ authority for commands and flags.
 
 | User intent | Read |
 |---|---|
-| List, search, read, draft, send, move, flag, or delete mail, or save mail attachments | [mail.md](references/mail.md) |
+| List, search, read, draft, send, move, flag, or delete mail, follow a conversation, or read or save mail attachments | [mail.md](references/mail.md) |
 | Create, rename, inspect, or delete folders | [folders.md](references/folders.md) |
 | Contacts or vCard import/export | [contacts.md](references/contacts.md) |
 | Calendar events or iCalendar import/export | [calendar.md](references/calendar.md) |

@@ -187,7 +187,7 @@ func TestMailList_RecursiveFromPrivateRootSkipsTheRoot(t *testing.T) {
 	}}})
 	srv.Handle("/ajax/folders", "list", testutil.Response{Body: map[string]any{"data": []any{
 		[]any{"default0/INBOX", "Inbox", "mail", 1, true},
-		[]any{"default0/Sent", "Sent", "mail", 1, false},
+		[]any{"default0/Archive", "Archive", "mail", 1, false},
 		[]any{"33", "Contacts", "contacts", 1, false},
 	}}})
 
@@ -201,7 +201,7 @@ func TestMailList_RecursiveFromPrivateRootSkipsTheRoot(t *testing.T) {
 			listed = append(listed, req.URL.Query().Get("folder"))
 		}
 	}
-	if strings.Join(listed, ",") != "default0/INBOX,default0/Sent" {
+	if strings.Join(listed, ",") != "default0/INBOX,default0/Archive" {
 		t.Errorf("listed folders = %v, want only the mail folders below the private root", listed)
 	}
 	var document mailListDocument

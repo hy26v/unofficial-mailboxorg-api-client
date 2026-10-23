@@ -145,6 +145,11 @@ func commandMailMoveTargetsTrash(args []string, op operations.Operation, flagSta
 		destination, ok := commandStringFlagValue(args, op, flagStart, "to")
 		return ok && isMailTrashFolder(destination)
 	}
+	if op.Name == "mail.draft" {
+		// --replace-id moves the replaced draft to Trash.
+		_, ok := commandStringFlagValue(args, op, flagStart, "replace-id")
+		return ok
+	}
 	if op.Name == "mail.move-many" {
 		if prepared == nil {
 			return false

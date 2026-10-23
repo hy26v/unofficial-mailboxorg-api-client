@@ -3,10 +3,12 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -502,6 +504,15 @@ func toCLIError(err error, fallbackCode string) *cliErrors.Error {
 	var cerr *cliErrors.Error
 	if errors.As(err, &cerr) {
 		return cerr
+	}
+	// A request that got no response, such as a timeout or a broken connection, is worth
+	// trying again. The message leaves out the request URL, which holds the session.
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return &cliErrors.Error{Code: "network_error", Message: "the request to mailbox.org got no response: " + urlErr.Err.Error(), Retryable: true}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return &cliErrors.Error{Code: "network_error", Message: "the request to mailbox.org timed out", Retryable: true}
 	}
 	return &cliErrors.Error{Code: fallbackCode, Message: err.Error()}
 }

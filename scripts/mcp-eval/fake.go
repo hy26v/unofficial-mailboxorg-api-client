@@ -101,6 +101,11 @@ func (f *fakeServer) serve(w http.ResponseWriter, r *http.Request) {
 		data = map[string]any{"id": 3, "user_id": 3, "folder_id": "32", "email1": ownerAddress, "display_name": ownerName, "timezone": "Europe/Berlin"}
 	case "account?all":
 		data = [][]any{f.accountRow(r.URL.Query().Get("columns"))}
+	case "account?get":
+		// As on mailbox.org: the *_fullname fields are empty and the names are in trash,
+		// spam, drafts and sent.
+		data = map[string]any{"id": 0, "trash_fullname": "", "spam_fullname": "", "drafts_fullname": "", "sent_fullname": "",
+			"trash": "Trash", "spam": "Junk", "drafts": "Drafts", "sent": "Sent"}
 	case "jslob?list":
 		data = []any{map[string]any{"id": "io.ox/mail", "tree": map[string]any{"defaultSendAddress": ""}}}
 	case "mail?all":

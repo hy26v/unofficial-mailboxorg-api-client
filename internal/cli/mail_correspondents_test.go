@@ -40,8 +40,8 @@ func TestMailCorrespondents_CountsDistinctMatchingAddresses(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0; stderr=%s", code, stderr)
 	}
 	want := `{"items":[` +
-		`{"address":"ana@partners.example","name":"Ana Partner","count":2,"last_date":"2023-11-14T22:18:20Z","roles":["from","cc"]},` +
-		`{"address":"info@partners.example","name":"Info","count":2,"last_date":"2023-11-14T22:16:40Z","roles":["from","to"]}` +
+		`{"address":"ana@partners.example","name":"Ana Partner","count":2,"last_date":"2023-11-14T22:18:20Z","roles":["from","cc"],"from_count":1,"to_count":0,"cc_count":1,"last_from":"2023-11-14T22:18:20Z","last_to":"2023-11-14T22:16:40Z"},` +
+		`{"address":"info@partners.example","name":"Info","count":2,"last_date":"2023-11-14T22:16:40Z","roles":["from","to"],"from_count":1,"to_count":1,"cc_count":0,"last_from":"2023-11-14T22:15:00Z","last_to":"2023-11-14T22:16:40Z"}` +
 		`],"count":2,"total":2,"truncated":false,"has_more":false}` + "\n"
 	if stdout != want {
 		t.Errorf("stdout =\n%s\nwant\n%s", stdout, want)
@@ -101,5 +101,40 @@ func TestMailCorrespondents_Validation(t *testing.T) {
 				t.Errorf("invalid arguments sent %d requests", len(srv.Requests()))
 			}
 		})
+	}
+}
+
+func TestMailCorrespondents_DefaultScopeLeavesOutDraftsTrashAndSpam(t *testing.T) {
+	srv := newScopeServer(t)
+	defer srv.Close()
+
+	stdout, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "correspondents", "--query", "supplier.example", "--llm"})
+	if code != 0 {
+		t.Fatalf("exit %d; stderr=%s", code, stderr)
+	}
+	if got := strings.Join(requestedFolders(srv, "search"), ","); got != "default0/INBOX,default0/Sent,"+scopeLegal+",default0/INBOX/Kit" {
+		t.Errorf("searched folders = %s, want no Drafts, Trash or Junk", got)
+	}
+	var document mailCorrespondentsDocument
+	if err := json.Unmarshal([]byte(stdout), &document); err != nil || len(document.Items) != 2 {
+		t.Fatalf("stdout = %s, want two addresses", stdout)
+	}
+	support := document.Items[0]
+	if support.Address != "support@supplier.example" || support.Count != 2 || support.FromCount != 1 || support.ToCount != 1 ||
+		support.LastFrom != "2023-11-14T22:21:40Z" || support.LastTo != "2023-11-14T22:18:20Z" || support.LastDate != support.LastFrom {
+		t.Errorf("support = %+v, want one received and one sent message, without the draft", support)
+	}
+	before := len(srv.Requests())
+	if _, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "correspondents", "--query", "supplier.example", "--folder", "1", "--llm"}); code != 0 {
+		t.Fatalf("folder 1: exit %d; stderr=%s", code, stderr)
+	}
+	searched := 0
+	for _, req := range srv.Requests()[before:] {
+		if req.URL.Query().Get("action") == "search" {
+			searched++
+		}
+	}
+	if searched != 8 {
+		t.Errorf("folder 1 searched %d folders, want all 8", searched)
 	}
 }

@@ -110,8 +110,8 @@ func callText(t *testing.T, session *mcp.ClientSession, tool string, args map[st
 
 // readOnlyTools and fullTools are the tools of "mbx mcp" with the default task tools.
 var (
-	readOnlyTools = []string{"mbx_commands", "mbx_contacts_list", "mbx_describe", "mbx_events_list", "mbx_mail_correspondents", "mbx_mail_list", "mbx_mail_read", "mbx_mail_search", "mbx_mail_senders", "mbx_read"}
-	fullTools     = []string{"mbx_commands", "mbx_contacts_list", "mbx_delete", "mbx_describe", "mbx_events_list", "mbx_mail_correspondents", "mbx_mail_draft", "mbx_mail_list", "mbx_mail_move", "mbx_mail_read", "mbx_mail_search", "mbx_mail_senders", "mbx_read", "mbx_write"}
+	readOnlyTools = []string{"mbx_commands", "mbx_contacts_list", "mbx_describe", "mbx_events_list", "mbx_mail_attachment", "mbx_mail_correspondents", "mbx_mail_list", "mbx_mail_read", "mbx_mail_search", "mbx_mail_senders", "mbx_mail_thread", "mbx_read"}
+	fullTools     = []string{"mbx_commands", "mbx_contacts_list", "mbx_delete", "mbx_describe", "mbx_events_list", "mbx_mail_attachment", "mbx_mail_correspondents", "mbx_mail_draft", "mbx_mail_list", "mbx_mail_move", "mbx_mail_read", "mbx_mail_search", "mbx_mail_senders", "mbx_mail_thread", "mbx_read", "mbx_write"}
 )
 
 func TestMCPBinary_StdioSession(t *testing.T) {

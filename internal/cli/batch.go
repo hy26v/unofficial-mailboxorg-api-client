@@ -388,10 +388,16 @@ func buildBatchPlan(op operations.Operation, params map[string]any) (batchPlan, 
 			if err != nil {
 				return batchPlan{}, err
 			}
+			if requestedMailListField(mailListOptions{fields: fields}, mailSnippetField) {
+				return batchPlan{}, fmt.Errorf("mail.list batching does not support the snippet field; use direct mail.list")
+			}
 			opts.fields = fields
 		}
 		if opts.folder == "" {
 			return batchPlan{}, fmt.Errorf("mail.list folder must not be blank")
+		}
+		if strings.EqualFold(opts.folder, mailAllFolders) {
+			return batchPlan{}, fmt.Errorf("mail.list batching reads one folder; use direct mail.list for folder all")
 		}
 		columns := mailListColumnsFor(opts)
 		columnIDs := make([]string, len(columns))

@@ -139,6 +139,10 @@ func TestNew_OffersFiveToolsWithEffectAnnotations(t *testing.T) {
 			t.Errorf("mbx_read enum lacks %s", want)
 		}
 	}
+	// mail.attachment returns the content without save-to, which MCP does not offer.
+	if !slices.Contains(read, "mail.attachment") || !slices.Contains(read, "mail.thread") {
+		t.Errorf("mbx_read enum lacks mail.attachment or mail.thread")
+	}
 	for _, want := range []string{"mail.send", "mail.move", "tasks.create", "mail.read"} {
 		if !slices.Contains(write, want) {
 			t.Errorf("mbx_write enum lacks %s", want)
@@ -152,7 +156,7 @@ func TestNew_OffersFiveToolsWithEffectAnnotations(t *testing.T) {
 	all := append(append(append([]string{}, read...), write...), del...)
 	for _, absent := range []string{
 		"login", "logout", "change-password", // credentials and session
-		"mail.attachment", "files.create", "attachments.create", "contacts.import", "events.import", // required local files
+		"files.create", "attachments.create", "contacts.import", "events.import", // required local files
 		"contacts.export", "events.export", "mail.move-many", // need --output or --checkpoint
 	} {
 		if slices.Contains(all, absent) {
@@ -333,8 +337,17 @@ func TestDiscoveryTools(t *testing.T) {
 		t.Errorf("groups = %s, want mail", text)
 	}
 	_, text = call(t, session, toolCommands, map[string]any{"group": "mail"})
-	if !strings.Contains(text, `"name":"mail.delete","summary"`) || !strings.Contains(text, `"tool":"mbx_delete"`) || strings.Contains(text, "mail.attachment") {
+	if !strings.Contains(text, `"name":"mail.delete","summary"`) || !strings.Contains(text, `"tool":"mbx_delete"`) ||
+		!strings.Contains(text, `"name":"mail.attachment"`) || strings.Contains(text, "save-to") {
 		t.Errorf("mail commands = %s", text)
+	}
+	_, text = call(t, session, toolCommands, map[string]any{"query": "download mail attachment"})
+	if !strings.HasPrefix(text, `{"commands":[{"name":"mail.attachment"`) {
+		t.Errorf("attachment search = %s, want mail.attachment first", text)
+	}
+	_, text = call(t, session, toolCommands, map[string]any{"query": "open the signed contract pdf"})
+	if !strings.Contains(text, `"name":"mail.attachment"`) || !strings.Contains(text, "match some of them") {
+		t.Errorf("partial search = %s, want mail.attachment with the partial-match note", text)
 	}
 	result, text := call(t, session, toolCommands, map[string]any{"group": "nope"})
 	if !result.IsError {
@@ -630,7 +643,7 @@ func TestTaskTools(t *testing.T) {
 func TestTaskTools_FollowReadOnlyAndAllowlist(t *testing.T) {
 	ro := connect(t, New(Options{Run: (&recordingRunner{}).run, Getenv: noEnv, TaskTools: true, ReadOnly: true}))
 	tools := listTools(t, ro)
-	if tools["mbx_mail_draft"] != nil || tools["mbx_mail_move"] != nil || tools["mbx_mail_search"] == nil || len(tools) != 10 {
+	if tools["mbx_mail_draft"] != nil || tools["mbx_mail_move"] != nil || tools["mbx_mail_search"] == nil || len(tools) != 12 {
 		t.Errorf("read-only tools = %v", tools)
 	}
 	if strings.Contains(ro.InitializeResult().Instructions, "mbx_mail_draft") {
@@ -643,18 +656,53 @@ func TestTaskTools_FollowReadOnlyAndAllowlist(t *testing.T) {
 	}
 }
 
-func TestTaskTools_NameRealArguments(t *testing.T) {
+// TestTaskTools_OfferEveryArgumentOfTheirOperation keeps the task tools and the run tools
+// from drifting apart: a task tool offers every argument that mbx_describe shows for its
+// operation, except write flags and the arguments it omits with a reason.
+func TestTaskTools_OfferEveryArgumentOfTheirOperation(t *testing.T) {
+	session := connect(t, New(Options{Run: (&recordingRunner{}).run, Getenv: noEnv, TaskTools: true}))
+	tools := listTools(t, session)
 	for _, task := range taskTools {
 		op, ok := operations.Default.Get(task.Operation)
 		if !ok {
 			t.Fatalf("%s: unknown operation %s", task.Name, task.Operation)
 		}
-		taskSchema(op, task.Args) // panics on an unknown or blocked argument
-		for name, spec := range op.Args {
-			if spec.Required && !slices.Contains(task.Args, name) {
-				t.Errorf("%s leaves out the required argument %s", task.Name, name)
+		for name, reason := range task.Omit {
+			if _, exists := op.Args[name]; !exists || hiddenArg(name) || reason == "" {
+				t.Errorf("%s omits %q, which is not an offered argument of %s or has no reason", task.Name, name, op.Name)
 			}
 		}
+		_, text := call(t, session, toolDescribe, map[string]any{"operation": op.Name})
+		var described struct {
+			Args map[string]argDescription `json:"args"`
+		}
+		if err := json.Unmarshal([]byte(text), &described); err != nil {
+			t.Fatal(err)
+		}
+		schema, _ := json.Marshal(tools[task.Name].InputSchema)
+		var properties struct {
+			Properties map[string]any `json:"properties"`
+			Required   []string       `json:"required"`
+		}
+		if err := json.Unmarshal(schema, &properties); err != nil {
+			t.Fatal(err)
+		}
+		for name, arg := range described.Args {
+			_, omitted := task.Omit[name]
+			_, offered := properties.Properties[name]
+			switch {
+			case arg.Effect == "write" && offered:
+				t.Errorf("%s offers the write flag %s", task.Name, name)
+			case arg.Effect != "write" && !omitted && !offered:
+				t.Errorf("%s does not offer %s, which %s takes", task.Name, name, op.Name)
+			}
+			if arg.Required && !slices.Contains(properties.Required, name) {
+				t.Errorf("%s does not require %s", task.Name, name)
+			}
+		}
+	}
+	if d := tools["mbx_mail_read"].Description; !strings.Contains(d, "mark-seen change data") || !strings.Contains(d, "mbx_write with operation mail.read") {
+		t.Errorf("mbx_mail_read description = %q, want the write flag named", d)
 	}
 }
 
@@ -683,11 +731,15 @@ func TestTaskTools_HintDescribesTheCalledTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := hint.Hint
-	if h.Tool != "mbx_mail_list" || h.Args["to-domain"] == "" || h.Args["page-size"] != "" || h.Example["operation"] != nil {
-		t.Errorf("hint = %+v, want only the arguments of mbx_mail_list", h)
+	if h.Tool != "mbx_mail_list" || h.Args["to-domain"] == "" || h.Args["page-size"] == "" || h.Example["operation"] != nil || h.Note != "" {
+		t.Errorf("hint = %+v, want the arguments of mbx_mail_list, which are all of mail.list", h)
 	}
-	if !strings.Contains(h.Note, "mbx_read with operation mail.list also takes") || !strings.Contains(h.Note, "page-size") {
-		t.Errorf("note = %q, want the run tool's other arguments", h.Note)
+	result, _ = call(t, session, "mbx_mail_draft", map[string]any{"bogus": "x"})
+	if err := json.Unmarshal([]byte(result.Content[1].(*mcp.TextContent).Text), &hint); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(hint.Hint.Note, "mbx_write with operation mail.draft also takes input") {
+		t.Errorf("draft note = %q, want the omitted argument", hint.Hint.Note)
 	}
 	if len(runner.calls) != 0 {
 		t.Errorf("refused call ran the CLI: %q", runner.calls)
@@ -714,10 +766,10 @@ func TestDescriptions_UseToolArgumentsNotCLIFlags(t *testing.T) {
 			t.Errorf("describe shows %s", hidden)
 		}
 	}
-	if got := described.Args["recursive"].Description; !strings.Contains(got, "implies all, and with limit") {
+	if got := described.Args["recursive"].Description; !strings.Contains(got, "returns the newest limit matches (default 20)") {
 		t.Errorf("recursive description = %q", got)
 	}
-	if got := described.Args["all"].Description; got != "return every match" {
+	if got := described.Args["all"].Description; got != "return every match instead of one page" {
 		t.Errorf("all description = %q, want the CLI remark removed", got)
 	}
 	if !slices.Contains(described.Output["on_request"].([]any), any("to")) {
@@ -726,7 +778,7 @@ func TestDescriptions_UseToolArgumentsNotCLIFlags(t *testing.T) {
 
 	tools := listTools(t, session)
 	description := tools["mbx_mail_search"].Description
-	if !strings.Contains(description, "Output fields: id, folder, subject, from, date.") ||
+	if !strings.Contains(description, "Output fields: id, folder, subject, from, from_name, date.") ||
 		!strings.Contains(description, "Returned only when fields or select names them: to, cc,") ||
 		!strings.Contains(description, "over 60000 bytes returns the newest messages that fit") {
 		t.Errorf("mbx_mail_search description = %q", description)
@@ -786,6 +838,28 @@ func TestTaskTools_PassReplyAndSenderFilterArguments(t *testing.T) {
 	for i := range want {
 		if !slices.Equal(runner.calls[i], want[i]) {
 			t.Errorf("call %d = %q, want %q", i, runner.calls[i], want[i])
+		}
+	}
+}
+
+func TestRun_RetryableErrorSaysWhetherTheCallIsSafeToRepeat(t *testing.T) {
+	runner := &recordingRunner{stderr: `{"error":{"code":"network_error","message":"the request to mailbox.org got no response","retryable":true}}`, code: 1}
+	session := connect(t, New(Options{Run: runner.run, Getenv: noEnv, TaskTools: true}))
+	result, _ := call(t, session, "mbx_mail_search", map[string]any{"query": "INV/2026/0042"})
+	last := result.Content[len(result.Content)-1].(*mcp.TextContent).Text
+	if !result.IsError || !strings.Contains(last, `"safe_to_repeat":true`) || !strings.Contains(last, "mail.search only reads") {
+		t.Errorf("read result = %v", result.Content)
+	}
+	result, _ = call(t, session, toolWrite, map[string]any{"operation": "tasks.create", "args": map[string]any{"title": "x"}})
+	last = result.Content[len(result.Content)-1].(*mcp.TextContent).Text
+	if !strings.Contains(last, `"safe_to_repeat":false`) {
+		t.Errorf("write result = %v", result.Content)
+	}
+	runner.stderr = `{"error":{"code":"invalid_argument","message":"x","retryable":false}}`
+	result, _ = call(t, session, "mbx_mail_search", map[string]any{"query": "x"})
+	for _, content := range result.Content {
+		if strings.Contains(content.(*mcp.TextContent).Text, "safe_to_repeat") {
+			t.Errorf("a final error got a retry hint: %v", result.Content)
 		}
 	}
 }

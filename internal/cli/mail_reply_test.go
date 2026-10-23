@@ -22,6 +22,8 @@ type replyServer struct {
 	original map[string]any
 	source   string
 	jslob    map[string]any
+	// moveFails makes mail update fail, as a failed move to Trash.
+	moveFails bool
 }
 
 func newReplyServer(t *testing.T) *replyServer {
@@ -81,6 +83,12 @@ func newReplyServer(t *testing.T) *replyServer {
 				return
 			}
 			writeJSONResponse(w, map[string]any{"data": map[string]any{"folder_id": "default0/Drafts", "id": "77"}})
+		case "/ajax/mail?update":
+			if s.moveFails {
+				writeJSONResponse(w, map[string]any{"error": "Mail folder could not be found", "code": "MSG-1001", "categories": "USER_INPUT"})
+				return
+			}
+			writeJSONResponse(w, map[string]any{"data": map[string]any{"folder_id": "default0/Trash", "id": "900"}})
 		default:
 			http.NotFound(w, r)
 		}

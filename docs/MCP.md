@@ -13,10 +13,13 @@ remote clients such as Claude web and ChatGPT. It offers five general tools:
 
 Typed tools for frequent tasks take the operation's arguments directly, so an agent needs
 no discovery call for them: `mbx_mail_list`, `mbx_mail_search`,
-`mbx_mail_correspondents`, `mbx_mail_read`, `mbx_mail_senders`, `mbx_events_list`,
-`mbx_contacts_list`, and, when changes are
-offered, `mbx_mail_draft` and `mbx_mail_move`. They follow the same read-only and
-allowlist rules. `mbx mcp --task-tools=false` offers only the five tools above.
+`mbx_mail_correspondents`, `mbx_mail_read`, `mbx_mail_attachment`, `mbx_mail_thread`,
+`mbx_mail_senders`, `mbx_events_list`, `mbx_contacts_list`, and, when changes are
+offered, `mbx_mail_draft` and `mbx_mail_move`. Each one offers every argument of its
+operation, except flags that change data (such as `mark-seen` of `mail.read`, which
+`mbx_write` takes) and the `input` JSON of `mail.draft`; a test keeps them in step with
+the operations. They follow the same read-only and allowlist rules.
+`mbx mcp --task-tools=false` offers only the five tools above.
 
 Clients use the tool annotations to decide when to ask you. You can allow `mbx_read`
 once and still approve each write and deletion.
@@ -27,9 +30,14 @@ with `mbx login` in a terminal, or give the server `MBX_USERNAME` and `MBX_PASSW
 its environment. Through MCP, mbx does not offer `login`, `logout`, `change-password`,
 flags that read or write local files (such as `--save-to`, `--file`, `--output` and
 `--attach`), `@file` input, or flags that pass passwords. Use the CLI for those.
+`mail.attachment` without `--save-to` returns the attachment through MCP: the text of a
+PDF, DOCX, XLSX, ODT, HTML or text file, or the file as base64.
 A read result holds at most 60000 bytes. The server sets `--fit` and
 `--max-output-bytes` itself, so a larger mail list or search returns the newest messages
-that fit; other larger reads fail with `result_too_large` and say how many items fit.
+that fit, with `next_cursor` for the next page; other larger reads fail with
+`result_too_large` and say how many items fit. An error with `"retryable": true`, such as
+`network_error`, comes with a `retry` note that says whether the call is safe to repeat:
+a read is, a change may already have happened.
 
 `mbx mcp --read-only`, `safety.read_only = true` and `MBX_READ_ONLY=1` offer only the
 discovery and read tools. Otherwise, configure `safety.delete_protection` first. Mail and
@@ -62,7 +70,7 @@ claude mcp add mbx -- mbx mcp
 ## Claude Desktop
 
 Each release has one Claude Desktop extension per platform, for example
-`mbx-v0.3.0-darwin-arm64.mcpb`. Open the file for your platform with Claude Desktop, or
+`mbx-v0.4.0-darwin-arm64.mcpb`. Open the file for your platform with Claude Desktop, or
 drag it into Settings > Extensions. The extension asks for your mailbox.org address, an
 optional password and read-only mode, which is on by default. Leave the password empty
 to use the session from `mbx login`. Claude Desktop keeps the password in the system

@@ -138,3 +138,17 @@ func TestSearch_RanksNameAndKeywordsAboveSummary(t *testing.T) {
 		t.Error("empty query returned operations")
 	}
 }
+
+func TestSearchSome_RanksByMatchedWords(t *testing.T) {
+	r := NewRegistry()
+	r.Register(Operation{Name: "mail.attachment", Resource: "mail", Action: "attachment", Summary: "Get one attachment", Keywords: []string{"pdf"}})
+	r.Register(Operation{Name: "mail.list", Resource: "mail", Action: "list", Summary: "List mail"})
+	r.Register(Operation{Name: "files.list", Resource: "files", Action: "list", Summary: "List files"})
+	if got := r.Search("open the contract pdf", 5, nil); len(got) != 0 {
+		t.Fatalf("Search = %v, want no full match", got)
+	}
+	got := r.SearchSome("open the contract pdf of mail", 5, nil)
+	if len(got) != 2 || got[0].Name != "mail.attachment" || got[1].Name != "mail.list" {
+		t.Errorf("SearchSome = %v, want mail.attachment (pdf, mail) and then mail.list (mail)", got)
+	}
+}

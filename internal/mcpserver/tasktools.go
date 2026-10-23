@@ -13,37 +13,65 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// taskTool is one typed tool. Args names the arguments its schema offers: the ones agents
-// need for the task. The generic run tools keep every argument. Defaults are given to the
-// operation unless the call sets them.
+// taskTool is one typed tool for one fixed operation. Its schema offers every argument of
+// the operation that MCP offers, except the flags that change data (a read tool stays a
+// read) and the arguments named in Omit, with a reason; so a new operation argument
+// reaches the task tool without an edit here. Defaults are given to the operation unless
+// the call sets them.
 type taskTool struct {
 	Name        string
 	Operation   string
 	Title       string
 	Description string
-	Args        []string
-	Defaults    map[string]any
+	// Omit maps an argument that the tool leaves out to the reason.
+	Omit     map[string]string
+	Defaults map[string]any
 }
 
+// mailIDNote is said once in every task tool that takes or returns message ids.
+const mailIDNote = " Message ids are unique only within their folder: always give an id with its folder, exactly as returned."
+
 var taskTools = []taskTool{
-	{"mbx_mail_list", "mail.list", "List mail", "List the newest messages of a folder (default: the inbox), newest first. Returns ids for mbx_mail_read.",
-		[]string{"folder", "limit", "cursor", "since", "until", "from", "to-domain", "fields"}, nil},
-	{"mbx_mail_search", "mail.search", "Search mail", "Search messages by words in subject, addresses or body (default: the inbox; folder \"1\" with recursive searches every folder, newest first). Each result has the id and folder that mbx_mail_read needs. Body matches bring newsletters too: in \"subject,from\" or from-domain narrows the search.",
-		[]string{"query", "folder", "in", "limit", "cursor", "since", "until", "from", "from-domain", "to-domain", "all", "recursive", "skip-trash", "fields"}, nil},
-	{"mbx_mail_correspondents", "mail.correspondents", "Find email addresses", "Find the email addresses of a person or company in past mail, for example query \"example.org\" or a name: distinct matching addresses with name, message count and last date, most messages first. Searches every mail folder unless folder is given.",
-		[]string{"query", "in", "folder", "since", "until", "limit"}, nil},
-	{"mbx_mail_read", "mail.read", "Read a message", "Read one message's body as plain text, with links as \"text (url)\" without tracking parameters, and its attachment list. It stays unread.",
-		[]string{"folder", "id", "body-format", "links", "max-body-bytes"}, nil},
-	{"mbx_mail_senders", "mail.senders", "List sender addresses", "List the addresses the account may send from, with the default; query filters them. Use one as from for mbx_mail_draft. A reply draft (reply-id) picks the address the original was sent to by itself.",
-		[]string{"query", "variants"}, nil},
-	{"mbx_mail_draft", "mail.draft", "Save a draft", "Save a plain-text message in Drafts without sending it. To answer a message, give its reply-id and reply-folder: the draft threads (In-Reply-To, References), and to, subject (\"Re: ...\") and from default from that message. from must be one of mbx_mail_senders; without it the default sender applies. No signature is added unless signature is given. The result repeats to, cc, subject and in_reply_to.",
-		[]string{"from", "to", "cc", "bcc", "subject", "body", "reply-id", "reply-folder", "reply-all", "quote", "signature", "folder", "dry-run"}, nil},
-	{"mbx_mail_move", "mail.move", "Move a message", "Move one message to another folder; to default0/Trash is the soft delete. It checks that the message arrived (verified) unless verify is false; the new id is destination.id.",
-		[]string{"folder", "id", "to", "verify", "dry-run"}, map[string]any{"verify": true}},
-	{"mbx_events_list", "events.list", "List calendar events", "List calendar events; without from and to, the next 30 days.",
-		[]string{"from", "to", "limit", "no-expand"}, nil},
-	{"mbx_contacts_list", "contacts.list", "List contacts", "List contacts of the default address book.",
-		[]string{"limit"}, nil},
+	{Name: "mbx_mail_list", Operation: "mail.list", Title: "List mail",
+		Description: "List the newest messages of a folder (default: the inbox; folder \"all\" lists every mail folder except Trash, Spam and Drafts), newest first. Messages in Sent and Drafts include to. When has_more is true, give next_cursor as cursor for the next page." + mailIDNote},
+	{Name: "mbx_mail_search", Operation: "mail.search", Title: "Search mail",
+		Description: "Search messages by words in subject, addresses or body. By default it searches every mail folder except Trash, Spam and Drafts (folder \"all\"); give a folder id to search only that folder, or folder \"1\" with recursive for every folder, Trash included. Newest first; when has_more is true, give next_cursor as cursor for the next page. Each result has the id and folder that mbx_mail_read needs, and from_name; results in Sent include to. Body matches bring newsletters too: in \"subject,from\" or from-domain narrows the search; fields \"snippet\" adds the start of each body." + mailIDNote},
+	{Name: "mbx_mail_correspondents", Operation: "mail.correspondents", Title: "Find email addresses",
+		Description: "Find the email addresses of a person or company in past mail, for example query \"example.org\" or a name: distinct matching addresses with name and message counts, most messages first. from_count and last_from tell whether and when the address wrote to the account; to_count, cc_count and last_to when it received mail. Searches every mail folder except Trash, Spam and Drafts unless folder is given."},
+	{Name: "mbx_mail_read", Operation: "mail.read", Title: "Read a message",
+		Description: "Read one message's body as plain text, with links as \"text (url)\" without tracking parameters, its attachment list (ids for mbx_mail_attachment) and its routing headers: reply_to (where a reply goes), message_id, in_reply_to and references. It stays unread." + mailIDNote},
+	{Name: "mbx_mail_attachment", Operation: "mail.attachment", Title: "Read an attachment",
+		Description: "Get one attachment of a message by the attachment id from mbx_mail_read. content \"text\" (default) returns the text of a PDF, DOCX, XLSX, ODT, HTML or text file, with page_count, pages_without_text (scanned pages, no OCR), has_images and notes on what the text leaves out; a cut text has truncated and next_offset, to give as offset. content \"base64\" returns the file itself, up to max-bytes." + mailIDNote},
+	{Name: "mbx_mail_thread", Operation: "mail.thread", Title: "List a conversation",
+		Description: "List the messages of one conversation, oldest first, from every mail folder except Trash, Spam and Drafts, Sent included: the messages whose subject without Re:, Fwd: and similar prefixes is that of the given message. Messages with another subject are not found; search for them with mbx_mail_search." + mailIDNote},
+	{Name: "mbx_mail_senders", Operation: "mail.senders", Title: "List sender addresses",
+		Description: "List the addresses the account may send from, with the default; query filters them. Use one as from for mbx_mail_draft. A reply draft (reply-id) picks the address the original was sent to by itself."},
+	{Name: "mbx_mail_draft", Operation: "mail.draft", Title: "Save a draft",
+		Description: "Save a plain-text message in Drafts without sending it. To answer a message, give its reply-id and reply-folder: the draft threads (In-Reply-To, References), and to, subject (\"Re: ...\") and from default from that message; to_source says where to came from (reply-to, from or original-recipients). To revise a draft, give its id as replace-id with only the fields that change: the others come from that draft, and it moves to Trash after the new one is saved. from must be one of mbx_mail_senders; without it the default sender applies. No signature is added unless signature is given. The result repeats to, cc, subject and in_reply_to.",
+		Omit:        map[string]string{"input": "the typed arguments give the same fields"}},
+	{Name: "mbx_mail_move", Operation: "mail.move", Title: "Move a message",
+		Description: "Move one message to another folder; to default0/Trash is the soft delete. It checks that the message arrived (verified) unless verify is false; the new id is destination.id." + mailIDNote,
+		Defaults:    map[string]any{"verify": true}},
+	{Name: "mbx_events_list", Operation: "events.list", Title: "List calendar events",
+		Description: "List calendar events; without from and to, the next 30 days."},
+	{Name: "mbx_contacts_list", Operation: "contacts.list", Title: "List contacts",
+		Description: "List contacts of the default address book."},
+}
+
+// args returns the arguments that the task tool for op offers, sorted.
+func (task taskTool) args(op operations.Operation) []string {
+	write := map[string]bool{}
+	for _, name := range writeFlags(op) {
+		write[name] = true
+	}
+	var names []string
+	for name := range op.Args {
+		if _, omitted := task.Omit[name]; !omitted && !hiddenArg(name) && !write[name] {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // taskToolNames lists the typed tools that addTaskTools registers.
@@ -81,7 +109,7 @@ func (h *handlers) addTaskTools(server *mcp.Server) {
 			Name:        task.Name,
 			Title:       task.Title,
 			Description: h.taskDescription(task, op),
-			InputSchema: taskSchema(op, task.Args),
+			InputSchema: taskSchema(op, task.args(op)),
 			Annotations: annotations,
 		}, h.runTask(task, op, tool))
 	}
@@ -101,11 +129,15 @@ func (h *handlers) taskDescription(task taskTool, op operations.Operation) strin
 		}
 	}
 	text := task.Description + " Output fields: " + strings.Join(fields, ", ") + "."
+	if flags := writeFlags(op); len(flags) > 0 {
+		sort.Strings(flags)
+		text += fmt.Sprintf(" %s change data, so this tool leaves them out; mbx_write with operation %s takes them.", strings.Join(flags, ", "), op.Name)
+	}
 	if len(onRequest) > 0 {
 		text += fmt.Sprintf(" Returned only when %s or select names them: %s.", op.Output.OnRequestArg, strings.Join(op.Output.OnRequestFields, ", "))
 	}
 	if len(h.serverArgs(op)) > 0 {
-		text += fmt.Sprintf(" A result over %d bytes returns the newest messages that fit, with has_more, available (the number before trimming) and next_cursor.", h.opts.MaxReadBytes)
+		text += fmt.Sprintf(" A result over %d bytes returns the newest messages that fit, with has_more, available (the number before trimming) and next_cursor; truncated is the same as has_more.", h.opts.MaxReadBytes)
 	}
 	return text
 }
@@ -148,7 +180,7 @@ func taskSchema(op operations.Operation, names []string) map[string]any {
 // runTask runs the fixed operation of task through the same checks as the run tools.
 func (h *handlers) runTask(task taskTool, op operations.Operation, tool string) mcp.ToolHandler {
 	offered := map[string]bool{}
-	for _, name := range task.Args {
+	for _, name := range task.args(op) {
 		offered[name] = true
 	}
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {

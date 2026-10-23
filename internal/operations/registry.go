@@ -184,6 +184,49 @@ func (r *Registry) Search(query string, limit int, keep func(Operation) bool) []
 	return out
 }
 
+// SearchSome ranks the operations that match at least one query word, for a query that no
+// operation matches in full: the most matched words first, then the best score. Words of
+// two letters or fewer, such as "in" or "of", do not count.
+func (r *Registry) SearchSome(query string, limit int, keep func(Operation) bool) []Operation {
+	var words []string
+	for _, word := range searchWords(query) {
+		if len(word) > 2 {
+			words = append(words, word)
+		}
+	}
+	type scored struct {
+		op             Operation
+		matched, score int
+	}
+	var matches []scored
+	for _, op := range r.List() {
+		if keep != nil && !keep(op) {
+			continue
+		}
+		entry := scored{op: op}
+		for _, word := range words {
+			if score := wordScore(op, word); score > 0 {
+				entry.matched++
+				entry.score += score
+			}
+		}
+		if entry.matched > 0 {
+			matches = append(matches, entry)
+		}
+	}
+	sort.SliceStable(matches, func(i, j int) bool {
+		if matches[i].matched != matches[j].matched {
+			return matches[i].matched > matches[j].matched
+		}
+		return matches[i].score > matches[j].score
+	})
+	var out []Operation
+	for i := 0; i < len(matches) && (limit <= 0 || i < limit); i++ {
+		out = append(out, matches[i].op)
+	}
+	return out
+}
+
 func searchWords(query string) []string {
 	var words []string
 	for _, word := range strings.FieldsFunc(strings.ToLower(query), func(r rune) bool {

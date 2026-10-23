@@ -1,10 +1,11 @@
 // ABOUTME: Mail metadata listing and server-side search with explicit fields, pagination, recursion, and filters.
-// ABOUTME: Search may match body text on the provider, but neither command returns raw headers or bodies.
+// ABOUTME: Search may match body text on the provider; results carry metadata and, on request, a short snippet.
 package cli
 
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hy26v/unofficial-mailboxorg-api-client/internal/client"
 	cliErrors "github.com/hy26v/unofficial-mailboxorg-api-client/internal/errors"
@@ -23,7 +25,16 @@ import (
 )
 
 const (
-	mailListDefaultFolder   = "default0/INBOX"
+	mailListDefaultFolder = "default0/INBOX"
+	// mailAllFolders is the folder alias for every mail folder except Trash, Spam and
+	// Drafts and their subfolders: a recursive scan from the private root. It is the
+	// default scope of mail search and mail correspondents.
+	mailAllFolders = "all"
+	// mailSnippetMaxItems bounds the results of a list or search that asks for snippets,
+	// because each snippet reads its message.
+	mailSnippetMaxItems = 50
+	// mailSnippetChars is the length of a snippet in characters.
+	mailSnippetChars        = 200
 	mailListDefaultLimit    = 20
 	mailListMaxLimit        = 200
 	mailListDefaultPageSize = 200
@@ -45,11 +56,25 @@ const (
 // adds to the default id, subject, from and date.
 var mailListDefaultFields = map[string]bool{"id": true, "subject": true, "from": true, "date": true}
 
-var mailListOnRequestFields = []string{"folder", "to", "cc", "size", "sent_date", "received_date", "attachment", "seen", "flagged"}
+var mailListOnRequestFields = []string{"folder", "to", "cc", "size", "sent_date", "received_date", "attachment", "seen", "flagged", "snippet"}
 
 // mailSearchOnRequestFields are mailListOnRequestFields without folder: mail search always
 // returns the folder, which mail read needs with the id.
-var mailSearchOnRequestFields = []string{"to", "cc", "size", "sent_date", "received_date", "attachment", "seen", "flagged"}
+var mailSearchOnRequestFields = []string{"to", "cc", "size", "sent_date", "received_date", "attachment", "seen", "flagged", "snippet"}
+
+// mailListOutputFields and mailListScalarFields are the output fields of mail list and
+// mail search.
+var mailListOutputFields = []string{"id", "folder", "subject", "from", "from_name", "to", "cc", "date", "sent_date", "received_date", "size", "attachment", "seen", "flagged", "snippet"}
+
+var mailListScalarFields = []string{"id", "folder", "subject", "from", "from_name", "date", "sent_date", "received_date", "size", "attachment", "seen", "flagged", "snippet"}
+
+// mailFolderArgDescription describes --folder of mail list and mail search; the default
+// differs.
+func mailFolderArgDescription(defaultFolder string) string {
+	return "folder id, or all for every mail folder except Trash, Spam and Drafts (default " + defaultFolder + "); 1 with --recursive reads every mail folder, Trash, Spam and Drafts included. Message ids are unique only within their folder: always give the id together with its folder"
+}
+
+const mailFieldsArgNote = "; snippet adds the first 200 characters of the body text and reads each message, so it needs --limit 50 or less. Messages in Sent and Drafts always include to"
 
 func init() {
 	registerResource("mail", runMail)
@@ -64,14 +89,14 @@ func init() {
 		SideEffect: operations.SideEffectRead,
 		Idempotent: true,
 		Args: map[string]operations.ArgSpec{
-			"folder":           {Type: "string", Required: false, Description: "folder id (default default0/INBOX); use 1 with --recursive for every mail folder"},
+			"folder":           {Type: "string", Required: false, Description: mailFolderArgDescription(mailListDefaultFolder)},
 			"limit":            {Type: "int", Required: false, Description: "matching messages in one result page, 1-200 (default 20)"},
-			"offset":           {Type: "int", Required: false, Description: "provider row offset for the first page"},
-			"cursor":           {Type: "string", Required: false, Description: "opaque next_cursor from a prior result"},
-			"all":              {Type: "bool", Required: false, Description: "fetch every page (use --format jsonl or --output for large results; --fit trims what does not fit)"},
-			"page-size":        {Type: "int", Required: false, Description: "provider page size for --all or filtered scans, 1-200 (default 200)"},
-			"fields":           {Type: "string", Required: false, Description: "comma-separated extra safe fields: folder,to,cc,size,sent_date,received_date,attachment,seen,flagged (id, subject, from and date are always returned)"},
-			"recursive":        {Type: "bool", Required: false, Description: "scan the folder and all mail subfolders; implies --all, and with --limit returns the newest matches"},
+			"offset":           {Type: "int", Required: false, Description: "number of matching messages to skip before the first one returned"},
+			"cursor":           {Type: "string", Required: false, Description: "opaque next_cursor from a prior result; continues the same list"},
+			"all":              {Type: "bool", Required: false, Description: "return every match instead of one page (use --format jsonl or --output for large results; --fit trims what does not fit)"},
+			"page-size":        {Type: "int", Required: false, Description: "provider page size for --all or filtered scans, 1-200 (default 200); changes the requests, not the result"},
+			"fields":           {Type: "string", Required: false, Description: "comma-separated extra fields: folder,to,cc,size,sent_date,received_date,attachment,seen,flagged,snippet (id, subject, from, from_name and date are always returned)" + mailFieldsArgNote},
+			"recursive":        {Type: "bool", Required: false, Description: "also read every mail subfolder of the folder; returns the newest --limit matches (default 20) of all of them, or every match with --all, with next_cursor for the rest"},
 			"skip-trash":       {Type: "bool", Required: false, Description: "with --recursive, leave out the Trash and Spam folders and their subfolders"},
 			"from":             {Type: "string", Required: false, Description: "case-insensitive exact sender-address filter"},
 			"from-domain":      {Type: "string", Required: false, Description: "sender domain filter, with or without leading @, for example example.org"},
@@ -84,8 +109,8 @@ func init() {
 		},
 		Output: operations.OutputSpec{
 			Type:            "array",
-			Fields:          []string{"id", "folder", "subject", "from", "to", "cc", "date", "sent_date", "received_date", "size", "attachment", "seen", "flagged"},
-			ScalarFields:    []string{"id", "folder", "subject", "from", "date", "sent_date", "received_date", "size", "attachment", "seen", "flagged"},
+			Fields:          mailListOutputFields,
+			ScalarFields:    mailListScalarFields,
 			OnRequestFields: mailListOnRequestFields,
 			OnRequestArg:    "fields",
 		},
@@ -94,8 +119,8 @@ func init() {
 		Name:       "mail.search",
 		Resource:   "mail",
 		Action:     "search",
-		Summary:    "Search messages by subject, address, or body text on the server; returns safe metadata",
-		Keywords:   []string{"find", "look for", "query", "text", "subject"},
+		Summary:    "Search messages by subject, address, or body text on the server, in every mail folder except Trash, Spam and Drafts by default; returns safe metadata",
+		Keywords:   []string{"find", "look for", "query", "text", "subject", "everywhere"},
 		Method:     http.MethodPut,
 		Endpoint:   "/mail",
 		SideEffect: operations.SideEffectRead,
@@ -103,14 +128,14 @@ func init() {
 		Args: map[string]operations.ArgSpec{
 			"query":            {Type: "string", Required: true, Description: "words that must all match (case-insensitive substrings); wrap a phrase in double quotes"},
 			"in":               {Type: "string", Required: false, Description: "comma-separated fields to search: subject,from,to,cc,bcc,body, or address for from,to,cc,bcc (default subject,from,to,cc,body)"},
-			"folder":           {Type: "string", Required: false, Description: "folder id (default default0/INBOX); use 1 with --recursive for every mail folder"},
+			"folder":           {Type: "string", Required: false, Description: mailFolderArgDescription(mailAllFolders)},
 			"limit":            {Type: "int", Required: false, Description: "matching messages in one result page, 1-200 (default 20)"},
-			"offset":           {Type: "int", Required: false, Description: "offset into the folder's search matches for the first page"},
-			"cursor":           {Type: "string", Required: false, Description: "opaque next_cursor from a prior result"},
-			"all":              {Type: "bool", Required: false, Description: "return every match (use --format jsonl or --output for large results; --fit trims what does not fit)"},
-			"page-size":        {Type: "int", Required: false, Description: "local page size for --all or filtered scans, 1-200 (default 200)"},
-			"fields":           {Type: "string", Required: false, Description: "comma-separated extra safe fields: to,cc,size,sent_date,received_date,attachment,seen,flagged (id, folder, subject, from and date are always returned)"},
-			"recursive":        {Type: "bool", Required: false, Description: "search the folder and all mail subfolders; implies --all, and with --limit returns the newest matches"},
+			"offset":           {Type: "int", Required: false, Description: "number of matches to skip before the first one returned"},
+			"cursor":           {Type: "string", Required: false, Description: "opaque next_cursor from a prior result; continues the same search"},
+			"all":              {Type: "bool", Required: false, Description: "return every match instead of one page (use --format jsonl or --output for large results; --fit trims what does not fit)"},
+			"page-size":        {Type: "int", Required: false, Description: "local page size for --all or filtered scans, 1-200 (default 200); changes the requests, not the result"},
+			"fields":           {Type: "string", Required: false, Description: "comma-separated extra fields: to,cc,size,sent_date,received_date,attachment,seen,flagged,snippet (id, folder, subject, from, from_name and date are always returned)" + mailFieldsArgNote},
+			"recursive":        {Type: "bool", Required: false, Description: "also search every mail subfolder of the folder; returns the newest --limit matches (default 20) of all of them, or every match with --all, with next_cursor for the rest"},
 			"skip-trash":       {Type: "bool", Required: false, Description: "with --recursive, leave out the Trash and Spam folders and their subfolders"},
 			"from":             {Type: "string", Required: false, Description: "case-insensitive exact sender-address filter applied to matches"},
 			"from-domain":      {Type: "string", Required: false, Description: "sender domain filter applied to matches, with or without leading @, for example example.org; --query can then be any word of the wanted mail"},
@@ -123,8 +148,8 @@ func init() {
 		},
 		Output: operations.OutputSpec{
 			Type:            "array",
-			Fields:          []string{"id", "folder", "subject", "from", "to", "cc", "date", "sent_date", "received_date", "size", "attachment", "seen", "flagged"},
-			ScalarFields:    []string{"id", "folder", "subject", "from", "date", "sent_date", "received_date", "size", "attachment", "seen", "flagged"},
+			Fields:          mailListOutputFields,
+			ScalarFields:    mailListScalarFields,
 			OnRequestFields: mailSearchOnRequestFields,
 			OnRequestArg:    "fields",
 		},
@@ -166,6 +191,8 @@ func runMail(stdout, stderr io.Writer, args []string, httpClient *http.Client, b
 		return runMailSenders(stdout, stderr, args[1:], httpClient, baseURL, sessionPath, getenv)
 	case "correspondents":
 		return runMailCorrespondents(stdout, stderr, args[1:], httpClient, baseURL, sessionPath, getenv)
+	case "thread":
+		return runMailThread(stdout, stderr, args[1:], httpClient, baseURL, sessionPath, getenv)
 	default:
 		llm := hasFlag(args, "--llm")
 		err := &cliErrors.Error{Code: "invalid_argument", Message: "unknown mail action: " + args[0]}
@@ -179,6 +206,7 @@ type mailListItem struct {
 	Folder        string        `json:"folder,omitempty"`
 	Subject       string        `json:"subject"`
 	From          string        `json:"from"`
+	FromName      string        `json:"from_name,omitempty"`
 	To            []mailAddress `json:"to,omitempty"`
 	Cc            []mailAddress `json:"cc,omitempty"`
 	Date          string        `json:"date"`
@@ -188,13 +216,14 @@ type mailListItem struct {
 	HasAttachment *bool         `json:"attachment,omitempty"`
 	Seen          *bool         `json:"seen,omitempty"`
 	Flagged       *bool         `json:"flagged,omitempty"`
+	Snippet       *string       `json:"snippet,omitempty"`
 	includeTo     bool
 	includeCc     bool
 	includeSent   bool
-	// fromName is the sender's display name, which mail correspondents reports.
-	fromName string
 	// position is the folder offset of the item, the cursor that resumes a list at it.
 	position int
+	// sourceFolder is the folder the item was read from, also when Folder is not output.
+	sourceFolder string
 }
 
 // MarshalJSON distinguishes an optional field that was not requested from a requested
@@ -206,6 +235,7 @@ func (item mailListItem) MarshalJSON() ([]byte, error) {
 		Folder        string         `json:"folder,omitempty"`
 		Subject       string         `json:"subject"`
 		From          string         `json:"from"`
+		FromName      string         `json:"from_name,omitempty"`
 		To            *[]mailAddress `json:"to,omitempty"`
 		Cc            *[]mailAddress `json:"cc,omitempty"`
 		Date          string         `json:"date"`
@@ -215,6 +245,7 @@ func (item mailListItem) MarshalJSON() ([]byte, error) {
 		HasAttachment *bool          `json:"attachment,omitempty"`
 		Seen          *bool          `json:"seen,omitempty"`
 		Flagged       *bool          `json:"flagged,omitempty"`
+		Snippet       *string        `json:"snippet,omitempty"`
 	}
 	var to, cc *[]mailAddress
 	var sentDate **string
@@ -227,12 +258,24 @@ func (item mailListItem) MarshalJSON() ([]byte, error) {
 	if item.includeSent {
 		sentDate = &item.SentDate
 	}
-	return json.Marshal(mailListJSON{
-		ID: item.ID, Folder: item.Folder, Subject: item.Subject, From: item.From,
+	return marshalJSONUnescaped(mailListJSON{
+		ID: item.ID, Folder: item.Folder, Subject: item.Subject, From: item.From, FromName: item.FromName,
 		To: to, Cc: cc, Date: item.Date, SentDate: sentDate,
 		ReceivedDate: item.ReceivedDate, Size: item.Size, HasAttachment: item.HasAttachment,
-		Seen: item.Seen, Flagged: item.Flagged,
+		Seen: item.Seen, Flagged: item.Flagged, Snippet: item.Snippet,
 	})
+}
+
+// marshalJSONUnescaped is json.Marshal without HTML escaping, so a folder such as
+// "Legal & Corporate" reads as "&" and not "\u0026" and can be given back as shown.
+func marshalJSONUnescaped(value any) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buffer.Bytes(), []byte("\n")), nil
 }
 
 type mailListColumn struct {
@@ -253,18 +296,27 @@ var mailListExtraColumns = map[string]mailListColumn{
 }
 
 type mailListOptions struct {
-	llm            bool
-	folder         string
-	limit          int
-	limitSet       bool
-	offset         int
-	offsetSet      bool
-	cursor         string
-	all            bool
-	pageSize       int
-	fields         []string
-	recursive      bool
-	skipTrash      bool
+	llm       bool
+	folder    string
+	limit     int
+	limitSet  bool
+	offset    int
+	offsetSet bool
+	cursor    string
+	all       bool
+	pageSize  int
+	fields    []string
+	recursive bool
+	skipTrash bool
+	// skipDrafts leaves the Drafts folder out of a recursive scan; folder all sets it.
+	skipDrafts bool
+	// unbounded is set by --all without --limit: every match is returned.
+	unbounded bool
+	// startKey is the position that a recursive list's cursor resumes at.
+	startKey *mailListKey
+	// ownFolders holds the lower-case ids of the Sent and Drafts folders, whose messages
+	// always include to.
+	ownFolders     map[string]bool
 	from           string
 	fromSet        bool
 	fromDomain     string
@@ -282,6 +334,9 @@ type mailListOptions struct {
 
 func parseMailListOptionsFor(args []string, search bool) (mailListOptions, *cliErrors.Error) {
 	opts := mailListOptions{folder: mailListDefaultFolder, limit: mailListDefaultLimit, pageSize: mailListDefaultPageSize, maxOutputBytes: mailListDefaultMaxBytes, search: search}
+	if search {
+		opts.folder = mailAllFolders
+	}
 	operation := "mail.list"
 	rules := []flagRule{
 		intFlag("limit", 1, mailListMaxLimit, fmt.Sprintf("--limit must be an integer between 1 and %d", mailListMaxLimit)),
@@ -352,26 +407,29 @@ func parseMailListOptionsFor(args []string, search bool) (mailListOptions, *cliE
 	if opts.folder == "" {
 		return opts, invalidArgument("--folder must not be blank")
 	}
-	// A recursive scan reads every page of every folder, so it implies --all; with --limit
-	// it returns the newest matches. Without --recursive, --limit pages the folder itself,
-	// so --all adds nothing.
+	if strings.EqualFold(opts.folder, mailAllFolders) {
+		opts.folder, opts.recursive, opts.skipTrash, opts.skipDrafts = privateFolderRoot, true, true, true
+	}
+	// --all without --limit returns every match. A recursive scan reads every page of
+	// every folder to sort the matches of all of them, so it sets all for the scan and
+	// then keeps the newest --limit matches unless the result is unbounded. Without
+	// --recursive, --limit pages the folder itself, so --all with --limit adds nothing.
+	opts.unbounded = opts.all && !opts.limitSet
 	if opts.recursive {
 		opts.all = true
 	} else if opts.all && opts.limitSet {
 		opts.all = false
 	}
-	if opts.recursive && (opts.offsetSet || opts.cursor != "") {
-		return opts, invalidArgument("--recursive cannot be combined with --offset or --cursor")
-	}
 	if opts.offsetSet && opts.cursor != "" {
 		return opts, invalidArgument("--offset and --cursor are mutually exclusive")
 	}
 	if opts.cursor != "" {
-		offset, err := strconv.Atoi(strings.TrimPrefix(opts.cursor, "offset:"))
-		if !strings.HasPrefix(opts.cursor, "offset:") || err != nil || offset < 0 {
-			return opts, invalidArgument("--cursor must be an opaque value returned as next_cursor")
+		if cerr := parseMailListCursor(&opts); cerr != nil {
+			return opts, cerr
 		}
-		opts.offset = offset
+	}
+	if requestedMailListField(opts, "snippet") && (opts.unbounded || opts.limit > mailSnippetMaxItems) {
+		return opts, invalidArgument(fmt.Sprintf("--fields snippet reads each message, so it needs --limit %d or less, without --all", mailSnippetMaxItems))
 	}
 	if _, given := f.Lookup("to-domain"); given && opts.toDomain == "" {
 		return opts, invalidArgument("--to-domain must not be blank")
@@ -427,17 +485,17 @@ func mailListDateCheck(flag string) func(string) *cliErrors.Error {
 func parseMailListFields(value string) ([]string, error) {
 	seen := map[string]bool{}
 	fields := []string{}
-	allowed := make([]string, 0, len(mailListExtraColumns))
+	allowed := []string{mailSnippetField}
 	for field := range mailListExtraColumns {
 		allowed = append(allowed, field)
 	}
 	sort.Strings(allowed)
 	for _, raw := range strings.Split(value, ",") {
 		field := strings.TrimSpace(raw)
-		if mailListDefaultFields[field] {
+		if mailListDefaultFields[field] || field == "from_name" {
 			continue // always returned
 		}
-		if _, ok := mailListExtraColumns[field]; !ok {
+		if _, ok := mailListExtraColumns[field]; !ok && field != mailSnippetField {
 			return nil, fmt.Errorf("--fields contains unsupported field %q; allowed fields: %s", field, strings.Join(allowed, ", "))
 		}
 		if !seen[field] {
@@ -448,16 +506,27 @@ func parseMailListFields(value string) ([]string, error) {
 	return fields, nil
 }
 
+// mailSnippetField is the on-request field that reads the start of each message's body.
+// It has no provider column.
+const mailSnippetField = "snippet"
+
 func mailListColumnsFor(opts mailListOptions) []mailListColumn {
+	return mailListColumnsForFolder(opts, "")
+}
+
+// mailListColumnsForFolder is mailListColumnsFor for the messages of one folder: a Sent
+// or Drafts folder also gets the to column, because there the sender is always the
+// account itself.
+func mailListColumnsForFolder(opts mailListOptions, folder string) []mailListColumn {
 	columns := []mailListColumn{{Name: "id", ID: "600"}, {Name: "subject", ID: "607"}, {Name: "from", ID: "603"}, {Name: "date", ID: "610"}}
 	wanted := append([]string(nil), opts.fields...)
-	if opts.toDomain != "" {
+	if opts.toDomain != "" || opts.ownFolders[strings.ToLower(folder)] {
 		wanted = append(wanted, "to")
 	}
 	seenColumnIDs := map[string]bool{"600": true, "607": true, "603": true, "610": true}
 	for _, field := range wanted {
-		column := mailListExtraColumns[field]
-		if !seenColumnIDs[column.ID] {
+		column, ok := mailListExtraColumns[field]
+		if ok && !seenColumnIDs[column.ID] {
 			columns = append(columns, column)
 			seenColumnIDs[column.ID] = true
 		}
@@ -516,6 +585,7 @@ func fetchMailListPage(c *client.Client, sess client.Session, folder string, off
 
 func decodeMailListRows(rows [][]json.RawMessage, folder string, columns []mailListColumn, opts mailListOptions) ([]mailListItem, error) {
 	items := make([]mailListItem, 0, len(rows))
+	ownFolder := opts.ownFolders[strings.ToLower(folder)]
 	for _, row := range rows {
 		item, err := decodeMailListRowWithColumns(row, columns, opts)
 		if err != nil {
@@ -525,9 +595,19 @@ func decodeMailListRows(rows [][]json.RawMessage, folder string, columns []mailL
 		if opts.recursive || opts.search || requestedMailListField(opts, "folder") {
 			item.Folder = folder
 		}
+		item.sourceFolder = folder
+		if ownFolder {
+			item.includeTo = true
+		}
 		items = append(items, item)
 	}
 	return items, nil
+}
+
+// showsTo reports whether item's to field is output: when requested, or for a message in
+// Sent or Drafts.
+func showsTo(item mailListItem, opts mailListOptions) bool {
+	return requestedMailListField(opts, "to") || opts.ownFolders[strings.ToLower(item.sourceFolder)]
 }
 
 func decodeMailListRowWithColumns(row []json.RawMessage, columns []mailListColumn, opts mailListOptions) (mailListItem, error) {
@@ -558,16 +638,17 @@ func decodeMailListRowWithColumns(row []json.RawMessage, columns []mailListColum
 				return mailListItem{}, err
 			}
 			if len(addresses) > 0 {
-				item.From, item.fromName = addresses[0].Address, addresses[0].Name
+				item.From = addresses[0].Address
+				if name := displayName(addresses[0].Name); name != item.From {
+					item.FromName = name
+				}
 			}
 		case "to":
 			addresses, err := decodeMailAddresses(raw)
 			if err != nil {
 				return mailListItem{}, err
 			}
-			if requestedMailListField(opts, "to") || opts.toDomain != "" {
-				item.To = addresses
-			}
+			item.To = addresses
 		case "cc":
 			addresses, err := decodeMailAddresses(raw)
 			if err != nil {
@@ -708,7 +789,7 @@ func collectFolderMail(c *client.Client, sess client.Session, folder string, opt
 			if !mailListMatches(item, opts) {
 				continue
 			}
-			if !requestedMailListField(opts, "to") {
+			if !showsTo(item, opts) {
 				item.To = nil
 			}
 			if !opts.all && len(items) == opts.limit {
@@ -730,12 +811,16 @@ func collectFolderMail(c *client.Client, sess client.Session, folder string, opt
 	}
 }
 
+// recursiveMailFolders returns root and its mail descendants, breadth first. Only root and
+// folders that report subfolders are listed, so a tree of mostly leaf folders costs few
+// requests.
 func recursiveMailFolders(c *client.Client, sess client.Session, root string) ([]string, error) {
 	folders := []string{root}
+	parents := []string{root}
 	seen := map[string]bool{root: true}
-	for index := 0; index < len(folders); index++ {
+	for index := 0; index < len(parents); index++ {
 		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
-		children, err := listFolders(ctx, c, sess, folders[index])
+		children, err := listFolders(ctx, c, sess, parents[index])
 		cancel()
 		if err != nil {
 			return nil, err
@@ -746,6 +831,9 @@ func recursiveMailFolders(c *client.Client, sess client.Session, root string) ([
 			}
 			seen[child.ID] = true
 			folders = append(folders, child.ID)
+			if child.HasSubfolders {
+				parents = append(parents, child.ID)
+			}
 			if len(folders) > 10000 {
 				return nil, &cliErrors.Error{Code: "invalid_response", Message: "recursive mail folder traversal exceeded 10000 folders"}
 			}
@@ -768,44 +856,64 @@ func recursiveMailScanFolders(c *client.Client, sess client.Session, root string
 	return folders, nil
 }
 
-// withoutTrashAndSpam leaves the primary account's Trash and Spam folders, and their
-// subfolders, out of a recursive scan. The account names them in trash_fullname and
-// spam_fullname, or, as on mailbox.org, where those are empty, in trash and spam;
-// without either, default0/Trash is left out.
-func withoutTrashAndSpam(c *client.Client, sess client.Session, folders []string) ([]string, error) {
+// mailStandardFolders are the special folders of the primary account, as folder ids.
+// spam is empty when the account names no Spam folder.
+type mailStandardFolders struct {
+	trash, spam, drafts, sent string
+}
+
+// fetchMailStandardFolders reads the special folders of the primary account. The account
+// names them in trash_fullname, spam_fullname, drafts_fullname and sent_fullname, or, as
+// on mailbox.org, where those are empty, in trash, spam, drafts and sent; without either,
+// the default0 standard folder applies.
+func fetchMailStandardFolders(c *client.Client, sess client.Session) (mailStandardFolders, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
 	data, err := c.Do(ctx, http.MethodGet, "/account", "get", sess, url.Values{"id": {"0"}})
 	if err != nil {
-		return nil, err
+		return mailStandardFolders{}, err
 	}
 	var account struct {
-		TrashFullname string `json:"trash_fullname"`
-		SpamFullname  string `json:"spam_fullname"`
-		Trash         string `json:"trash"`
-		Spam          string `json:"spam"`
+		TrashFullname  string `json:"trash_fullname"`
+		SpamFullname   string `json:"spam_fullname"`
+		DraftsFullname string `json:"drafts_fullname"`
+		SentFullname   string `json:"sent_fullname"`
+		Trash          string `json:"trash"`
+		Spam           string `json:"spam"`
+		Drafts         string `json:"drafts"`
+		Sent           string `json:"sent"`
 	}
 	if err := json.Unmarshal(data, &account); err != nil {
-		return nil, &cliErrors.Error{Code: "invalid_response", Message: "could not decode the mail account for --skip-trash"}
+		return mailStandardFolders{}, &cliErrors.Error{Code: "invalid_response", Message: "could not decode the mail account's standard folders"}
 	}
-	var skipped []string
-	for _, names := range [][2]string{{account.TrashFullname, account.Trash}, {account.SpamFullname, account.Spam}} {
-		name := strings.Trim(strings.TrimSpace(names[0]), "/")
-		if name == "" {
-			name = strings.Trim(strings.TrimSpace(names[1]), "/")
+	pick := func(fullname, name, fallback string) string {
+		value := strings.Trim(strings.TrimSpace(fullname), "/")
+		if value == "" {
+			value = strings.Trim(strings.TrimSpace(name), "/")
 		}
-		if name != "" {
-			skipped = append(skipped, "default0/"+name)
+		switch {
+		case value == "":
+			return fallback
+		case strings.HasPrefix(value, primaryMailRoot+"/"):
+			return value
 		}
+		return primaryMailRoot + "/" + value
 	}
-	if len(skipped) == 0 || strings.TrimSpace(account.TrashFullname+account.Trash) == "" {
-		skipped = append(skipped, mailTrashDefaultFolder)
-	}
+	return mailStandardFolders{
+		trash:  pick(account.TrashFullname, account.Trash, mailTrashDefaultFolder),
+		spam:   pick(account.SpamFullname, account.Spam, ""),
+		drafts: pick(account.DraftsFullname, account.Drafts, mailDraftDefaultFolder),
+		sent:   pick(account.SentFullname, account.Sent, mailSentDefaultFolder),
+	}, nil
+}
+
+// withoutMailFolders leaves the skipped folders and their subfolders out of folders.
+func withoutMailFolders(folders, skipped []string) []string {
 	kept := folders[:0:0]
 	for _, folder := range folders {
 		skip := false
 		for _, root := range skipped {
-			if strings.EqualFold(folder, root) || strings.HasPrefix(strings.ToLower(folder), strings.ToLower(root)+"/") {
+			if root != "" && (strings.EqualFold(folder, root) || strings.HasPrefix(strings.ToLower(folder), strings.ToLower(root)+"/")) {
 				skip = true
 				break
 			}
@@ -814,18 +922,162 @@ func withoutTrashAndSpam(c *client.Client, sess client.Session, folders []string
 			kept = append(kept, folder)
 		}
 	}
-	return kept, nil
+	return kept
+}
+
+// mailScanFolders returns the folders whose messages a list or search reads, and sets
+// opts.ownFolders. A recursive scan that leaves out Trash, Spam or Drafts reads the
+// account's standard folders; otherwise the default0 standard folders name Sent and
+// Drafts.
+func mailScanFolders(c *client.Client, sess client.Session, opts *mailListOptions) ([]string, error) {
+	opts.ownFolders = map[string]bool{strings.ToLower(mailSentDefaultFolder): true, strings.ToLower(mailDraftDefaultFolder): true}
+	if !opts.recursive {
+		return []string{opts.folder}, nil
+	}
+	folders, err := recursiveMailScanFolders(c, sess, opts.folder)
+	if err != nil || !opts.skipTrash && !opts.skipDrafts {
+		return folders, err
+	}
+	standard, err := fetchMailStandardFolders(c, sess)
+	if err != nil {
+		return nil, err
+	}
+	opts.ownFolders = map[string]bool{strings.ToLower(standard.sent): true, strings.ToLower(standard.drafts): true}
+	var skipped []string
+	if opts.skipTrash {
+		skipped = append(skipped, standard.trash, standard.spam)
+	}
+	if opts.skipDrafts {
+		skipped = append(skipped, standard.drafts)
+	}
+	return withoutMailFolders(folders, skipped), nil
+}
+
+// mailListKey is the position of a message in a recursive list: newest first, then by
+// folder and then by id, highest first, so that messages with the same date keep one order.
+type mailListKey struct {
+	Date, Folder, ID string
+}
+
+func mailListKeyOf(item mailListItem) mailListKey {
+	return mailListKey{Date: item.Date, Folder: item.sourceFolder, ID: item.ID}
+}
+
+// before reports whether a comes before b in a recursive list.
+func (a mailListKey) before(b mailListKey) bool {
+	if a.Date != b.Date {
+		return a.Date > b.Date
+	}
+	if a.Folder != b.Folder {
+		return a.Folder < b.Folder
+	}
+	left, leftErr := strconv.ParseInt(a.ID, 10, 64)
+	right, rightErr := strconv.ParseInt(b.ID, 10, 64)
+	if leftErr == nil && rightErr == nil {
+		return left > right
+	}
+	return a.ID > b.ID
+}
+
+// cursor is the next_cursor that resumes a recursive list at this message.
+func (a mailListKey) cursor() string {
+	data, _ := json.Marshal([]string{a.Date, a.Folder, a.ID})
+	return mailListKeyCursorPrefix + base64.RawURLEncoding.EncodeToString(data)
+}
+
+// Cursor prefixes: an offset into the matches of one folder, or the position in a
+// recursive list. A position stays valid when new mail arrives.
+const (
+	mailListOffsetCursorPrefix = "offset:"
+	mailListKeyCursorPrefix    = "at:"
+)
+
+// parseMailListCursor reads --cursor into opts.offset or opts.startKey.
+func parseMailListCursor(opts *mailListOptions) *cliErrors.Error {
+	invalid := invalidArgument("--cursor must be an opaque value returned as next_cursor")
+	switch {
+	case strings.HasPrefix(opts.cursor, mailListOffsetCursorPrefix):
+		if opts.recursive {
+			return invalidArgument("this --cursor continues a list of one folder: give the same folder without --recursive")
+		}
+		offset, err := strconv.Atoi(strings.TrimPrefix(opts.cursor, mailListOffsetCursorPrefix))
+		if err != nil || offset < 0 {
+			return invalid
+		}
+		opts.offset = offset
+	case strings.HasPrefix(opts.cursor, mailListKeyCursorPrefix):
+		if !opts.recursive {
+			return invalidArgument("this --cursor continues a recursive list or a search of all folders: give the same folder and --recursive")
+		}
+		data, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(opts.cursor, mailListKeyCursorPrefix))
+		var parts []string
+		if err != nil || json.Unmarshal(data, &parts) != nil || len(parts) != 3 || parts[1] == "" || parts[2] == "" {
+			return invalid
+		}
+		if _, err := time.Parse(time.RFC3339, parts[0]); err != nil {
+			return invalid
+		}
+		opts.startKey = &mailListKey{Date: parts[0], Folder: parts[1], ID: parts[2]}
+	default:
+		return invalid
+	}
+	return nil
+}
+
+// startRecursiveList drops the sorted items before the cursor position, and then offset
+// more.
+func startRecursiveList(items []mailListItem, start *mailListKey, offset int) []mailListItem {
+	if start != nil {
+		first := sort.Search(len(items), func(i int) bool { return !mailListKeyOf(items[i]).before(*start) })
+		items = items[first:]
+	}
+	if offset >= len(items) {
+		return items[:0]
+	}
+	return items[offset:]
+}
+
+// addMailSnippets sets the snippet of each item: the start of its body text, with white
+// space collapsed. A message that cannot be read gets an empty snippet, unless the error
+// is one to retry, such as a rate limit, which ends the command.
+func addMailSnippets(c *client.Client, sess client.Session, items []mailListItem) error {
+	for i := range items {
+		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+		message, err := fetchMailRead(ctx, c, sess, mailReadOptions{id: items[i].ID, folder: items[i].sourceFolder, bodyFormat: "text", links: mailLinksNone, maxBodyBytes: 4 * mailSnippetChars * utf8.UTFMax})
+		cancel()
+		snippet := ""
+		if err != nil {
+			if cerr := toCLIError(err, "api_error"); cerr.Retryable || cerr.Code == "rate_limited" || cerr.Code == "auth_failed" {
+				return cerr
+			}
+		} else {
+			snippet = mailSnippet(message.Body)
+		}
+		items[i].Snippet = &snippet
+	}
+	return nil
+}
+
+// mailSnippet is the first mailSnippetChars characters of body, with white space collapsed.
+func mailSnippet(body string) string {
+	text := strings.Join(strings.Fields(body), " ")
+	if utf8.RuneCountInString(text) <= mailSnippetChars {
+		return text
+	}
+	runes := []rune(text)
+	return strings.TrimSpace(string(runes[:mailSnippetChars])) + "…"
 }
 
 type mailListDocument struct {
-	Items      []mailListItem `json:"items"`
-	Truncated  bool           `json:"truncated"`
-	Count      int            `json:"count"`
-	Offset     int            `json:"offset"`
-	Limit      int            `json:"limit,omitempty"`
-	HasMore    bool           `json:"has_more"`
-	NextOffset *int           `json:"next_offset,omitempty"`
-	NextCursor string         `json:"next_cursor,omitempty"`
+	Items []mailListItem `json:"items"`
+	// Truncated is the same as HasMore; it stays for scripts that read it.
+	Truncated  bool   `json:"truncated"`
+	Count      int    `json:"count"`
+	Offset     int    `json:"offset"`
+	Limit      int    `json:"limit,omitempty"`
+	HasMore    bool   `json:"has_more"`
+	NextOffset *int   `json:"next_offset,omitempty"`
+	NextCursor string `json:"next_cursor,omitempty"`
 	// Available is set when --fit or the --limit of a recursive scan dropped items: the
 	// number of items before it did.
 	Available int `json:"available,omitempty"`
@@ -851,81 +1103,89 @@ func runMailListMode(stdout, stderr io.Writer, args []string, httpClient *http.C
 	if authErr != nil {
 		return exitWithError(stderr, opts.llm, authErr)
 	}
-	folders := []string{opts.folder}
-	if opts.recursive {
-		var err error
-		folders, err = recursiveMailScanFolders(c, sess, opts.folder)
-		if err == nil && opts.skipTrash {
-			folders, err = withoutTrashAndSpam(c, sess, folders)
-		}
-		if err != nil {
-			cerr := toCLIError(err, "api_error")
-			writeErr(stderr, opts.llm, cerr)
-			return cliErrors.ExitCodeFor(cerr)
-		}
+	folders, err := mailScanFolders(c, sess, &opts)
+	if err != nil {
+		return exitWithError(stderr, opts.llm, toCLIError(err, "api_error"))
 	}
-	columns := mailListColumnsFor(opts)
+	// A recursive list applies --offset to the merged list, not to each folder.
+	scanOpts := opts
+	if opts.recursive {
+		scanOpts.offset = 0
+	}
 	allItems := []mailListItem{}
 	hasMore, nextOffset := false, opts.offset
 	for _, folder := range folders {
-		items, folderHasMore, folderNextOffset, err := collectFolderMail(c, sess, folder, opts, columns)
+		items, folderHasMore, folderNextOffset, err := collectFolderMail(c, sess, folder, scanOpts, mailListColumnsForFolder(opts, folder))
 		if err != nil {
-			cerr := toCLIError(err, "api_error")
-			writeErr(stderr, opts.llm, cerr)
-			return cliErrors.ExitCodeFor(cerr)
+			return exitWithError(stderr, opts.llm, toCLIError(err, "api_error"))
 		}
 		allItems = append(allItems, items...)
 		if len(allItems) > mailListMaxAllItems {
 			cerr := &cliErrors.Error{Code: "output_too_large", Message: fmt.Sprintf("recursive mail list exceeded %d matching messages; narrow the folder or date filters", mailListMaxAllItems)}
-			writeErr(stderr, opts.llm, cerr)
-			return cliErrors.ExitCodeFor(cerr)
+			return exitWithError(stderr, opts.llm, cerr)
 		}
 		if folderHasMore {
 			hasMore, nextOffset = true, folderNextOffset
 		}
 	}
 	available := 0
+	var next *mailListKey
 	if opts.recursive {
-		sort.SliceStable(allItems, func(i, j int) bool { return allItems[i].Date > allItems[j].Date })
-		if opts.limitSet && len(allItems) > opts.limit {
-			available, allItems, hasMore = len(allItems), allItems[:opts.limit], true
+		sort.SliceStable(allItems, func(i, j int) bool { return mailListKeyOf(allItems[i]).before(mailListKeyOf(allItems[j])) })
+		allItems = startRecursiveList(allItems, opts.startKey, opts.offset)
+		if !opts.unbounded && len(allItems) > opts.limit {
+			key := mailListKeyOf(allItems[opts.limit])
+			available, next = len(allItems), &key
+			allItems, hasMore = allItems[:opts.limit], true
+		}
+	}
+	if requestedMailListField(opts, mailSnippetField) {
+		if err := addMailSnippets(c, sess, allItems); err != nil {
+			return exitWithError(stderr, opts.llm, toCLIError(err, "api_error"))
 		}
 	}
 	document := mailListDocument{Items: allItems, Truncated: hasMore, Count: len(allItems), Offset: opts.offset, HasMore: hasMore, Available: available}
-	if !opts.all || opts.limitSet {
+	if !opts.unbounded {
 		document.Limit = opts.limit
 	}
-	if hasMore && !opts.recursive {
+	switch {
+	case next != nil:
+		document.NextCursor = next.cursor()
+	case hasMore && !opts.recursive:
 		document.NextOffset = &nextOffset
-		document.NextCursor = "offset:" + strconv.Itoa(nextOffset)
+		document.NextCursor = mailListOffsetCursorPrefix + strconv.Itoa(nextOffset)
 	}
 	return emitMailListDocument(stdout, stderr, opts, document)
 }
 
 // fitMailListDocument keeps the leading items of document that fit in maxBytes, with
-// has_more, available and, unless the list is recursive, the cursor of the first dropped
-// item. A recursive list merges folders, so no single cursor resumes it.
+// has_more, available and the cursor of the first dropped item: its offset in the folder,
+// or, for a recursive list, which merges folders, its position.
 func fitMailListDocument(document mailListDocument, maxBytes int, recursive bool) (mailListDocument, []byte, error) {
 	items := document.Items
 	// prefix[k] is the encoded size of the first k items with the commas between them.
 	prefix := make([]int, len(items)+1)
 	for i, item := range items {
-		data, err := json.Marshal(item)
+		data, err := marshalJSONUnescaped(item)
 		if err != nil {
 			return document, nil, err
 		}
 		prefix[i+1] = prefix[i] + len(data) + 1
 	}
 	fitted := document
-	fitted.Truncated, fitted.HasMore, fitted.Available = true, true, len(items)
+	fitted.Truncated, fitted.HasMore, fitted.Available = true, true, max(document.Available, len(items))
 	for keep := sort.Search(len(items)+1, func(k int) bool { return prefix[k] > maxBytes }) - 1; keep >= 0; keep-- {
 		fitted.Items, fitted.Count = items[:keep], keep
-		fitted.NextOffset, fitted.NextCursor = nil, ""
-		if keep < len(items) && !recursive {
-			next := items[keep].position
-			fitted.NextOffset, fitted.NextCursor = &next, "offset:"+strconv.Itoa(next)
+		fitted.NextOffset, fitted.NextCursor = document.NextOffset, document.NextCursor
+		if keep < len(items) {
+			if recursive {
+				fitted.NextOffset, fitted.NextCursor = nil, mailListKeyOf(items[keep]).cursor()
+			} else {
+				next := items[keep].position
+				fitted.NextOffset, fitted.NextCursor = &next, mailListOffsetCursorPrefix+strconv.Itoa(next)
+			}
 		}
-		payload, err := json.Marshal(fitted)
+		payload, err := marshalJSONUnescaped(fitted)
 		if err != nil {
 			return document, nil, err
 		}
@@ -938,7 +1198,7 @@ func fitMailListDocument(document mailListDocument, maxBytes int, recursive bool
 }
 
 func emitMailListDocument(stdout, stderr io.Writer, opts mailListOptions, document mailListDocument) int {
-	payload, err := json.Marshal(document)
+	payload, err := marshalJSONUnescaped(document)
 	if err == nil && opts.fit && opts.output == "" && len(payload)+1 > opts.maxOutputBytes {
 		document, payload, err = fitMailListDocument(document, opts.maxOutputBytes, opts.recursive)
 		payload = bytes.TrimSuffix(payload, []byte("\n"))

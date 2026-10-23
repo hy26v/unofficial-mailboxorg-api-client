@@ -55,7 +55,7 @@ func TestMailList_LLMMode_CompactJSON(t *testing.T) {
 	if !strings.HasPrefix(strings.TrimSpace(stdout), "{") {
 		t.Errorf("stdout not JSON: %q", stdout)
 	}
-	want := `{"items":[{"id":"7","subject":"mailbox invoice","from":"noreply@mailbox.org","date":"2026-07-24T00:06:14Z"}],"truncated":false,"count":1,"offset":0,"limit":20,"has_more":false}` + "\n"
+	want := `{"items":[{"id":"7","subject":"mailbox invoice","from":"noreply@mailbox.org","from_name":"mailbox","date":"2026-07-24T00:06:14Z"}],"truncated":false,"count":1,"offset":0,"limit":20,"has_more":false}` + "\n"
 	if stdout != want {
 		t.Errorf("stdout = %q, want %q", stdout, want)
 	}

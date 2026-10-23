@@ -214,7 +214,7 @@ func signInCommands() map[string][]string {
 		"mail list":          {"mail", "list", "--llm"},
 		"mail move":          {"mail", "move", "--id", "7", "--folder", "default0/INBOX", "--to", "default0/Archive", "--llm"},
 		"mail move-many":     {"mail", "move-many", "--input", `[{"folder":"default0/INBOX","id":"7","to":"default0/Archive"}]`, "--preflight", "--llm"},
-		"mail search":        {"mail", "search", "--query", "invoice", "--llm"},
+		"mail search":        {"mail", "search", "--folder", "default0/INBOX", "--query", "invoice", "--llm"},
 		"mail send":          {"mail", "send", "--to", "a@example.invalid", "--subject", "s", "--llm"},
 		"account create":     {"account", "create", "--login", "l", "--password", "p", "--mail-url", "imap://host:993", "--primary-address", "a@example.invalid", "--llm"},
 		"account delete":     {"account", "delete", "--id", "5", "--confirm", "5", "--llm"},

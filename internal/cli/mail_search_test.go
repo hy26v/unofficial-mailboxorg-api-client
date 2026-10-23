@@ -41,7 +41,7 @@ func TestMailSearch_SendsExactSearchRequest(t *testing.T) {
 	srv := newMailSearchServer(t, mailSearchRows(1))
 	defer srv.Close()
 
-	stdout, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--query", `invoice "March 2026"`, "--llm"})
+	stdout, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--folder", "default0/INBOX", "--query", `invoice "March 2026"`, "--llm"})
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%s", code, stderr)
 	}
@@ -96,7 +96,7 @@ func TestMailSearch_PagesMatchesLocallyWithOneRequest(t *testing.T) {
 	srv := newMailSearchServer(t, mailSearchRows(5))
 	defer srv.Close()
 
-	stdout, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--query", "invoice", "--limit", "2", "--llm"})
+	stdout, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--folder", "default0/INBOX", "--query", "invoice", "--limit", "2", "--llm"})
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%s", code, stderr)
 	}
@@ -108,7 +108,7 @@ func TestMailSearch_PagesMatchesLocallyWithOneRequest(t *testing.T) {
 		t.Fatalf("first page = %+v, want ids 1,2 and next_cursor offset:2", first)
 	}
 
-	stdout, stderr, code = run(t, srv, mailSearchEnv, []string{"mail", "search", "--query", "invoice", "--limit", "2", "--cursor", first.NextCursor, "--llm"})
+	stdout, stderr, code = run(t, srv, mailSearchEnv, []string{"mail", "search", "--folder", "default0/INBOX", "--query", "invoice", "--limit", "2", "--cursor", first.NextCursor, "--llm"})
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%s", code, stderr)
 	}
@@ -120,7 +120,7 @@ func TestMailSearch_PagesMatchesLocallyWithOneRequest(t *testing.T) {
 		t.Errorf("second page = %+v, want ids 3,4 and next_cursor offset:4", second)
 	}
 
-	stdout, _, code = run(t, srv, mailSearchEnv, []string{"mail", "search", "--query", "invoice", "--all", "--page-size", "2", "--llm"})
+	stdout, _, code = run(t, srv, mailSearchEnv, []string{"mail", "search", "--folder", "default0/INBOX", "--query", "invoice", "--all", "--page-size", "2", "--llm"})
 	var all mailListDocument
 	if code != 0 || json.Unmarshal([]byte(stdout), &all) != nil || all.Count != 5 || all.HasMore {
 		t.Errorf("--all = %s, want all five matches", stdout)
@@ -201,7 +201,7 @@ func TestMailSearch_SendsLimitAndPagesTheSameWhetherOrNotTheServerHonorsIt(t *te
 				t.Run(tc.name, func(t *testing.T) {
 					srv, limits := newLimitAwareMailSearchServer(t, tc.total, honorLimit)
 					defer srv.Close()
-					args := append([]string{"mail", "search", "--query", "invoice", "--llm"}, tc.args...)
+					args := append([]string{"mail", "search", "--folder", "default0/INBOX", "--query", "invoice", "--llm"}, tc.args...)
 					stdout, stderr, code := runAgainstHTTPServer(t, srv, t.TempDir(), args)
 					if code != 0 {
 						t.Fatalf("exit=%d stderr=%s", code, stderr)
@@ -231,7 +231,7 @@ func TestMailSearch_AllScanGrowsLimitUntilTheMatchesEnd(t *testing.T) {
 		t.Run(fmt.Sprintf("honor=%v", honorLimit), func(t *testing.T) {
 			srv, limits := newLimitAwareMailSearchServer(t, 9, honorLimit)
 			defer srv.Close()
-			stdout, stderr, code := runAgainstHTTPServer(t, srv, t.TempDir(), []string{"mail", "search", "--query", "invoice", "--all", "--page-size", "2", "--llm"})
+			stdout, stderr, code := runAgainstHTTPServer(t, srv, t.TempDir(), []string{"mail", "search", "--folder", "default0/INBOX", "--query", "invoice", "--all", "--page-size", "2", "--llm"})
 			if code != 0 {
 				t.Fatalf("exit=%d stderr=%s", code, stderr)
 			}
@@ -260,7 +260,7 @@ func TestMailSearch_AppliesMetadataFiltersToMatches(t *testing.T) {
 	srv := newMailSearchServer(t, mailSearchRows(3))
 	defer srv.Close()
 
-	stdout, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--query", "invoice", "--from", "BILLING2@example.org", "--llm"})
+	stdout, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--folder", "default0/INBOX", "--query", "invoice", "--from", "BILLING2@example.org", "--llm"})
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%s", code, stderr)
 	}
@@ -275,7 +275,7 @@ func TestMailSearch_RecursiveFromPrivateRootSkipsTheRoot(t *testing.T) {
 	defer srv.Close()
 	srv.Handle("/ajax/folders", "list", testutil.Response{Body: map[string]any{"data": []any{
 		[]any{"default0/INBOX", "Inbox", "mail", 1, true},
-		[]any{"default0/Sent", "Sent", "mail", 1, false},
+		[]any{"default0/Archive", "Archive", "mail", 1, false},
 		[]any{"33", "Contacts", "contacts", 1, false},
 	}}})
 
@@ -289,7 +289,7 @@ func TestMailSearch_RecursiveFromPrivateRootSkipsTheRoot(t *testing.T) {
 			searched = append(searched, req.URL.Query().Get("folder"))
 		}
 	}
-	if strings.Join(searched, ",") != "default0/INBOX,default0/Sent" {
+	if strings.Join(searched, ",") != "default0/INBOX,default0/Archive" {
 		t.Errorf("searched folders = %v, want only the mail folders below the private root", searched)
 	}
 	var document mailListDocument
@@ -306,13 +306,13 @@ func TestMailSearch_Validation(t *testing.T) {
 		args []string
 		want string
 	}{
-		"missing query":      {[]string{"mail", "search", "--llm"}, "--query is required"},
-		"blank query":        {[]string{"mail", "search", "--query", "  ", "--llm"}, "--query must not be blank"},
-		"empty quotes":       {[]string{"mail", "search", "--query", `""`, "--llm"}, "--query must not be blank"},
-		"unclosed quote":     {[]string{"mail", "search", "--query", `"refund`, "--llm"}, "unclosed double quote"},
-		"control character":  {[]string{"mail", "search", "--query", "a\x1bb", "--llm"}, "control characters"},
-		"too many terms":     {[]string{"mail", "search", "--query", "a b c d e f g h i j k", "--llm"}, "maximum is 10"},
-		"unknown field":      {[]string{"mail", "search", "--query", "x", "--in", "subject,headers", "--llm"}, `unsupported field \"headers\"`},
+		"missing query":      {[]string{"mail", "search", "--folder", "default0/INBOX", "--llm"}, "--query is required"},
+		"blank query":        {[]string{"mail", "search", "--folder", "default0/INBOX", "--query", "  ", "--llm"}, "--query must not be blank"},
+		"empty quotes":       {[]string{"mail", "search", "--folder", "default0/INBOX", "--query", `""`, "--llm"}, "--query must not be blank"},
+		"unclosed quote":     {[]string{"mail", "search", "--folder", "default0/INBOX", "--query", `"refund`, "--llm"}, "unclosed double quote"},
+		"control character":  {[]string{"mail", "search", "--folder", "default0/INBOX", "--query", "a\x1bb", "--llm"}, "control characters"},
+		"too many terms":     {[]string{"mail", "search", "--folder", "default0/INBOX", "--query", "a b c d e f g h i j k", "--llm"}, "maximum is 10"},
+		"unknown field":      {[]string{"mail", "search", "--folder", "default0/INBOX", "--query", "x", "--in", "subject,headers", "--llm"}, `unsupported field \"headers\"`},
 		"query on mail list": {[]string{"mail", "list", "--query", "x", "--llm"}, "unknown flag: --query"},
 		"in on mail list":    {[]string{"mail", "list", "--in", "body", "--llm"}, "unknown flag: --in"},
 	} {
@@ -346,9 +346,9 @@ func mailSearchRowsWithTo(count int) []any {
 
 func TestMailSearch_SelectOfAnOnRequestFieldRequestsIt(t *testing.T) {
 	for name, args := range map[string][]string{
-		"without --fields":     {"mail", "search", "--query", "invoice", "--format", "json", "--select", "id,to"},
-		"merged into --fields": {"mail", "search", "--query", "invoice", "--fields", "to", "--format", "json", "--select", "id,to,cc"},
-		"trailing value flag":  {"--format", "json", "--select", "id,to", "--", "mail", "search", "--limit", "5", "--query", "invoice"},
+		"without --fields":     {"mail", "search", "--folder", "default0/INBOX", "--query", "invoice", "--format", "json", "--select", "id,to"},
+		"merged into --fields": {"mail", "search", "--folder", "default0/INBOX", "--query", "invoice", "--fields", "to", "--format", "json", "--select", "id,to,cc"},
+		"trailing value flag":  {"--format", "json", "--select", "id,to", "--", "mail", "search", "--folder", "default0/INBOX", "--limit", "5", "--query", "invoice"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			rows := mailSearchRowsWithTo(1)
@@ -376,7 +376,7 @@ func TestMailSearch_FitReturnsTheNewestMatchesThatFitWithAnExactCursor(t *testin
 	srv := newMailSearchServer(t, mailSearchRows(40))
 	defer srv.Close()
 
-	stdout, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--query", "invoice", "--all", "--fit", "--max-output-bytes", "1000", "--llm"})
+	stdout, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--folder", "default0/INBOX", "--query", "invoice", "--all", "--fit", "--max-output-bytes", "1000", "--llm"})
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%s", code, stderr)
 	}
@@ -415,7 +415,7 @@ func TestMailSearch_FitCursorSkipsFilteredMatches(t *testing.T) {
 	srv := newMailSearchServer(t, rows)
 	defer srv.Close()
 
-	stdout, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--query", "invoice", "--from", "billing@example.org", "--limit", "15", "--fit", "--max-output-bytes", "600", "--llm"})
+	stdout, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--folder", "default0/INBOX", "--query", "invoice", "--from", "billing@example.org", "--limit", "15", "--fit", "--max-output-bytes", "600", "--llm"})
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%s", code, stderr)
 	}
@@ -439,7 +439,7 @@ func TestMailSearch_FitCursorSkipsFilteredMatches(t *testing.T) {
 func TestMailSearch_WithoutFitALargeResultStillFails(t *testing.T) {
 	srv := newMailSearchServer(t, mailSearchRows(40))
 	defer srv.Close()
-	_, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--query", "invoice", "--all", "--max-output-bytes", "1000", "--llm"})
+	_, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--folder", "default0/INBOX", "--query", "invoice", "--all", "--max-output-bytes", "1000", "--llm"})
 	if code == 0 || !strings.Contains(stderr, "output_too_large") {
 		t.Errorf("exit %d, stderr %s, want output_too_large", code, stderr)
 	}
@@ -448,7 +448,7 @@ func TestMailSearch_WithoutFitALargeResultStillFails(t *testing.T) {
 func TestMailSearch_SelectKeepsTheCursorOfAnIncompleteList(t *testing.T) {
 	srv := newMailSearchServer(t, mailSearchRows(5))
 	defer srv.Close()
-	stdout, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--query", "invoice", "--limit", "2", "--format", "json", "--select", "id"})
+	stdout, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--folder", "default0/INBOX", "--query", "invoice", "--limit", "2", "--format", "json", "--select", "id"})
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%s", code, stderr)
 	}
@@ -464,12 +464,12 @@ func TestParseMailSearchFields_AddressShorthand(t *testing.T) {
 	}
 }
 
-func TestMailSearch_RecursiveImpliesAllAndLimitKeepsTheNewest(t *testing.T) {
+func TestMailSearch_RecursiveLimitKeepsTheNewestWithACursor(t *testing.T) {
 	srv := newMailSearchServer(t, mailSearchRows(3))
 	defer srv.Close()
 	srv.Handle("/ajax/folders", "list", testutil.Response{Body: map[string]any{"data": []any{
 		[]any{"default0/INBOX", "Inbox", "mail", 1, false},
-		[]any{"default0/Sent", "Sent", "mail", 1, false},
+		[]any{"default0/Archive", "Archive", "mail", 1, false},
 	}}})
 
 	stdout, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--query", "invoice", "--folder", "1", "--recursive", "--limit", "4", "--llm"})
@@ -480,8 +480,8 @@ func TestMailSearch_RecursiveImpliesAllAndLimitKeepsTheNewest(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &document); err != nil {
 		t.Fatal(err)
 	}
-	if document.Count != 4 || !document.HasMore || !document.Truncated || document.Available != 6 || document.Limit != 4 || document.NextCursor != "" {
-		t.Errorf("stdout = %s, want the newest 4 of 6 matches without a cursor", stdout)
+	if document.Count != 4 || !document.HasMore || !document.Truncated || document.Available != 6 || document.Limit != 4 || !strings.HasPrefix(document.NextCursor, "at:") {
+		t.Errorf("stdout = %s, want the newest 4 of 6 matches with a cursor", stdout)
 	}
 	for i := 1; i < len(document.Items); i++ {
 		if document.Items[i-1].Date < document.Items[i].Date {
@@ -493,7 +493,7 @@ func TestMailSearch_RecursiveImpliesAllAndLimitKeepsTheNewest(t *testing.T) {
 func TestMailSearch_AllWithLimitPagesLikeLimit(t *testing.T) {
 	srv := newMailSearchServer(t, mailSearchRowsWithTo(5))
 	defer srv.Close()
-	stdout, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--query", "invoice", "--all", "--limit", "2", "--fields", "from,to", "--llm"})
+	stdout, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--folder", "default0/INBOX", "--query", "invoice", "--all", "--limit", "2", "--fields", "from,to", "--llm"})
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%s", code, stderr)
 	}
@@ -509,11 +509,11 @@ func TestMailSearch_AllWithLimitPagesLikeLimit(t *testing.T) {
 func TestMailSearch_ReturnsTheFolderByDefault(t *testing.T) {
 	srv := newMailSearchServer(t, mailSearchRows(1))
 	defer srv.Close()
-	stdout, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--query", "invoice", "--llm"})
+	stdout, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--folder", "default0/INBOX", "--query", "invoice", "--llm"})
 	if code != 0 || !strings.Contains(stdout, `"folder":"default0/INBOX"`) {
 		t.Fatalf("code %d, stdout = %s, stderr = %s; want the folder", code, stdout, stderr)
 	}
-	stdout, _, code = run(t, srv, mailSearchEnv, []string{"mail", "search", "--query", "invoice"})
+	stdout, _, code = run(t, srv, mailSearchEnv, []string{"mail", "search", "--folder", "default0/INBOX", "--query", "invoice"})
 	if code != 0 || !strings.Contains(stdout, "folder") || !strings.Contains(stdout, "default0/INBOX") {
 		t.Errorf("human output = %q, want a folder column", stdout)
 	}
@@ -525,7 +525,7 @@ func TestMailSearch_FromDomainFiltersOnTheServerAndExactly(t *testing.T) {
 	rows[2].([]any)[2] = []any{[]any{nil, "news@mail.example.org"}}
 	srv := newMailSearchServer(t, rows)
 	defer srv.Close()
-	stdout, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--query", "grant", "--from-domain", "@Example.org", "--llm"})
+	stdout, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--folder", "default0/INBOX", "--query", "grant", "--from-domain", "@Example.org", "--llm"})
 	if code != 0 {
 		t.Fatalf("exit code = %d; stderr=%s", code, stderr)
 	}
@@ -582,7 +582,7 @@ func TestMailSearch_SkipTrashLeavesOutTrashAndSpam(t *testing.T) {
 	if strings.Join(searched, ",") != "default0/INBOX,default0/Trashy" {
 		t.Errorf("names only: searched folders = %v, want Trash, its subfolder and Junk left out", searched)
 	}
-	if _, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--query", "invoice", "--skip-trash", "--llm"}); code != 4 || !strings.Contains(stderr, "--skip-trash needs --recursive") {
+	if _, stderr, code := run(t, srv, mailSearchEnv, []string{"mail", "search", "--folder", "default0/INBOX", "--query", "invoice", "--skip-trash", "--llm"}); code != 4 || !strings.Contains(stderr, "--skip-trash needs --recursive") {
 		t.Errorf("without --recursive: code %d, stderr = %s", code, stderr)
 	}
 }

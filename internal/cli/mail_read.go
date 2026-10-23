@@ -1,5 +1,5 @@
-// ABOUTME: The "mail read" and "mail attachment" commands: one message's body text and attachment
-// ABOUTME: list via mail?action=get, and attachment downloads to owner-only files, never to stdout.
+// ABOUTME: The "mail read" command: one message's body text, attachment list and routing headers
+// ABOUTME: via mail?action=get, with the HTML-to-text conversion that mail bodies need.
 package cli
 
 import (
@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"mime"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -34,7 +36,7 @@ func init() {
 		Name:       "mail.read",
 		Resource:   "mail",
 		Action:     "read",
-		Summary:    "Read one message's body text and attachment list; changes state only with --mark-seen, which marks it seen",
+		Summary:    "Read one message's body text, attachment list and routing headers (Reply-To, Message-ID, In-Reply-To, References); changes state only with --mark-seen, which marks it seen",
 		Keywords:   []string{"open", "body", "content", "view", "message text"},
 		Method:     http.MethodGet,
 		Endpoint:   "/mail",
@@ -50,30 +52,8 @@ func init() {
 		},
 		Output: operations.OutputSpec{
 			Type:         "object",
-			Fields:       []string{"id", "folder", "subject", "from", "to", "cc", "bcc", "sent_date", "received_date", "size", "seen", "flagged", "body_format", "body", "body_bytes", "body_truncated", "attachments", "nested_messages"},
-			ScalarFields: []string{"id", "folder", "subject", "sent_date", "received_date", "size", "seen", "flagged", "body_format", "body", "body_bytes", "body_truncated"},
-		},
-	})
-	operations.Register(operations.Operation{
-		Name:       "mail.attachment",
-		Resource:   "mail",
-		Action:     "attachment",
-		Summary:    "Save one mail attachment to an owner-only file; content is never printed to stdout",
-		Keywords:   []string{"download", "file"},
-		Method:     http.MethodGet,
-		Endpoint:   "/mail",
-		SideEffect: operations.SideEffectRead,
-		Idempotent: true,
-		Args: map[string]operations.ArgSpec{
-			"id":         {Type: "string", Required: true, Description: "message id"},
-			"folder":     {Type: "string", Required: true, Description: "folder id, e.g. \"default0/INBOX\""},
-			"attachment": {Type: "string", Required: true, Description: "attachment id from mail read's attachments list"},
-			"save-to":    {Type: "string", Required: true, Description: "local path for the attachment content; written owner-only"},
-		},
-		Output: operations.OutputSpec{
-			Type:         "object",
-			Fields:       []string{"id", "folder", "attachment", "filename", "content_type", "size", "saved_to", "bytes_written"},
-			ScalarFields: []string{"id", "folder", "attachment", "filename", "content_type", "size", "saved_to", "bytes_written"},
+			Fields:       []string{"id", "folder", "subject", "from", "to", "cc", "bcc", "reply_to", "message_id", "in_reply_to", "references", "sent_date", "received_date", "size", "seen", "flagged", "body_format", "body", "body_bytes", "body_truncated", "attachments", "nested_messages"},
+			ScalarFields: []string{"id", "folder", "subject", "message_id", "in_reply_to", "sent_date", "received_date", "size", "seen", "flagged", "body_format", "body", "body_bytes", "body_truncated"},
 		},
 	})
 }
@@ -87,13 +67,19 @@ type mailReadAttachment struct {
 }
 
 type mailReadResult struct {
-	ID            string               `json:"id"`
-	Folder        string               `json:"folder"`
-	Subject       string               `json:"subject"`
-	From          []mailAddress        `json:"from"`
-	To            []mailAddress        `json:"to"`
-	Cc            []mailAddress        `json:"cc"`
-	Bcc           []mailAddress        `json:"bcc"`
+	ID      string        `json:"id"`
+	Folder  string        `json:"folder"`
+	Subject string        `json:"subject"`
+	From    []mailAddress `json:"from"`
+	To      []mailAddress `json:"to"`
+	Cc      []mailAddress `json:"cc"`
+	Bcc     []mailAddress `json:"bcc"`
+	// ReplyTo is where a reply goes instead of the sender, when the message names it.
+	ReplyTo []mailAddress `json:"reply_to"`
+	// MessageID, InReplyTo and References are the threading headers.
+	MessageID     string               `json:"message_id"`
+	InReplyTo     string               `json:"in_reply_to"`
+	References    []string             `json:"references"`
 	SentDate      *string              `json:"sent_date"`
 	ReceivedDate  *string              `json:"received_date"`
 	Size          *int64               `json:"size"`
@@ -110,6 +96,8 @@ type mailReadResult struct {
 	// headers holds the provider's other headers by lower-case name, for a reply's
 	// threading headers. It is never printed.
 	headers map[string][]string
+	// draft is the message's \Draft flag.
+	draft bool
 }
 
 // mailReadNestedMessage is one attached message from nested_msgs. OX sends it as a mail
@@ -434,6 +422,47 @@ func decodeMailReadHeaderMap(raw map[string]json.RawMessage) map[string][]string
 	return headers
 }
 
+// headerAddresses parses an address header such as Reply-To. A value that does not parse
+// is kept as one address, so the caller still sees it.
+func headerAddresses(value string) []mailAddress {
+	addresses := []mailAddress{}
+	value = strings.Join(strings.Fields(value), " ")
+	if value == "" {
+		return addresses
+	}
+	list, err := (&mail.AddressParser{WordDecoder: &mime.WordDecoder{CharsetReader: headerCharsetReader}}).ParseList(value)
+	if err != nil {
+		return append(addresses, mailAddress{Address: value})
+	}
+	for _, address := range list {
+		addresses = append(addresses, mailAddress{Name: address.Name, Address: address.Address})
+	}
+	return addresses
+}
+
+// headerCharsetReader decodes ISO-8859-1 and Windows-1252 encoded words, which mail
+// headers often use, in addition to UTF-8 and US-ASCII, which mime.WordDecoder knows.
+func headerCharsetReader(charset string, input io.Reader) (io.Reader, error) {
+	switch strings.ToLower(charset) {
+	case "iso-8859-1", "latin1", "windows-1252", "cp1252":
+		data, err := io.ReadAll(input)
+		if err != nil {
+			return nil, err
+		}
+		return strings.NewReader(latin1ToUTF8(data)), nil
+	}
+	return nil, fmt.Errorf("unsupported charset %q", charset)
+}
+
+// latin1ToUTF8 decodes ISO-8859-1 bytes.
+func latin1ToUTF8(data []byte) string {
+	runes := make([]rune, len(data))
+	for i, b := range data {
+		runes[i] = rune(b)
+	}
+	return string(runes)
+}
+
 // decodeMailReadNested decodes nested_msgs. Each nested message keeps its headers and file
 // attachments; its body text is not decoded.
 func decodeMailReadNested(raws []json.RawMessage, depth int) ([]mailReadNestedMessage, error) {
@@ -498,8 +527,13 @@ func fetchMailRead(ctx context.Context, c *client.Client, sess client.Session, o
 		return mailReadResult{}, err
 	}
 	result.headers = decodeMailReadHeaderMap(message.Headers)
+	result.ReplyTo = headerAddresses(firstHeader(result.headers, "Reply-To"))
+	result.MessageID = strings.Join(messageIDs(firstHeader(result.headers, "Message-ID")), " ")
+	result.InReplyTo = strings.Join(messageIDs(firstHeader(result.headers, "In-Reply-To")), " ")
+	result.References = nonNilStrings(messageIDs(firstHeader(result.headers, "References")))
 	result.Seen = opts.markSeen || *message.Flags&mailFlagSeen != 0
 	result.Flagged = *message.Flags&mailFlagFlagged != 0
+	result.draft = *message.Flags&mailFlagDraft != 0
 
 	bodyParts, attachments, err := splitMailReadParts(message.Attachments, false)
 	if err != nil {
@@ -548,119 +582,6 @@ func fetchMailRead(ctx context.Context, c *client.Client, sess client.Session, o
 	return result, nil
 }
 
-func runMailAttachment(stdout, stderr io.Writer, args []string, httpClient *http.Client, baseURL, sessionPath string, getenv func(string) string) int {
-	f, ferr := parseCommandFlags("mail.attachment", args)
-	if ferr != nil {
-		return exitWithError(stderr, f.LLM(), ferr)
-	}
-	llm := f.LLM()
-	id := strings.TrimSpace(f.String("id"))
-	folder := strings.TrimSpace(f.String("folder"))
-	attachmentID := strings.TrimSpace(f.String("attachment"))
-	saveTo := f.String("save-to")
-	for _, required := range []struct{ flag, value string }{{"--id", id}, {"--folder", folder}, {"--attachment", attachmentID}, {"--save-to", strings.TrimSpace(saveTo)}} {
-		if required.value == "" {
-			return exitWithError(stderr, llm, invalidArgument(required.flag+" is required"))
-		}
-	}
-
-	authCtx, cancelAuth := context.WithTimeout(context.Background(), requestTimeout)
-	c, sess, authErr := signIn(authCtx, httpClient, baseURL, sessionPath, getenv)
-	cancelAuth()
-	if authErr != nil {
-		return exitWithError(stderr, llm, authErr)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
-	defer cancel()
-
-	// Read the message first so the attachment id is checked against this message and the
-	// output can name the file without trusting the download response.
-	message, err := fetchMailRead(ctx, c, sess, mailReadOptions{id: id, folder: folder, bodyFormat: "text", maxBodyBytes: mailReadMinimumMaxBodyBytes})
-	if err != nil {
-		cerr := toCLIError(err, "api_error")
-		writeErr(stderr, llm, cerr)
-		return cliErrors.ExitCodeFor(cerr)
-	}
-	attachment, matches := findMailReadAttachment(message.Attachments, message.NestedMessages, attachmentID)
-	if attachment == nil {
-		cerr := &cliErrors.Error{Code: "not_found", Message: "attachment not found in message: attachment=" + attachmentID + " id=" + id + " folder=" + folder}
-		writeErr(stderr, llm, cerr)
-		return cliErrors.ExitCodeFor(cerr)
-	}
-	if matches > 1 {
-		cerr := &cliErrors.Error{Code: "invalid_argument", Message: fmt.Sprintf("attachment id is ambiguous: %d attachments in the message and its nested messages have id %s, so the download could save the wrong part; nothing was saved: id=%s folder=%s", matches, attachmentID, id, folder)}
-		writeErr(stderr, llm, cerr)
-		return cliErrors.ExitCodeFor(cerr)
-	}
-
-	params := url.Values{"folder": {folder}, "id": {id}, "attachment": {attachmentID}, "save": {"1"}}
-	content, err := c.DoRaw(ctx, http.MethodGet, "/mail", "attachment", sess, params)
-	if err != nil {
-		cerr := toCLIError(err, "api_error")
-		writeErr(stderr, llm, cerr)
-		return cliErrors.ExitCodeFor(cerr)
-	}
-	if err := writePrivateFile(saveTo, content); err != nil {
-		cerr := &cliErrors.Error{Code: "invalid_argument", Message: "could not write --save-to file: " + err.Error()}
-		writeErr(stderr, llm, cerr)
-		return cliErrors.ExitCodeFor(cerr)
-	}
-
-	result := struct {
-		ID           string `json:"id"`
-		Folder       string `json:"folder"`
-		Attachment   string `json:"attachment"`
-		Filename     string `json:"filename"`
-		ContentType  string `json:"content_type"`
-		Size         *int64 `json:"size"`
-		SavedTo      string `json:"saved_to"`
-		BytesWritten int    `json:"bytes_written"`
-	}{id, folder, attachmentID, attachment.Filename, attachment.ContentType, attachment.Size, saveTo, len(content)}
-	if llm {
-		render.CompactJSON(stdout, result)
-		return 0
-	}
-	render.KeyValueTable(stdout, []render.Field{
-		{Name: "id", Value: result.ID},
-		{Name: "folder", Value: result.Folder},
-		{Name: "attachment", Value: result.Attachment},
-		{Name: "filename", Value: result.Filename},
-		{Name: "content_type", Value: result.ContentType},
-		{Name: "saved_to", Value: result.SavedTo},
-		{Name: "bytes_written", Value: strconv.Itoa(result.BytesWritten)},
-	})
-	return 0
-}
-
-// findMailReadAttachment finds an attachment id that mail read lists: among the message's
-// own attachments or inside its nested messages. It returns the attachment and how many
-// listed attachments have this id. The download request is the same for both; whether OX
-// serves a nested message's attachment by this id is not documented and has not been
-// checked against a live server. Because the download names only the outer message, an
-// id that is listed more than once (in the outer message and a nested one, or in two
-// nested messages) could save a different part under the wrong file name, so the caller
-// must refuse it.
-func findMailReadAttachment(attachments []mailReadAttachment, nested []mailReadNestedMessage, id string) (*mailReadAttachment, int) {
-	var found *mailReadAttachment
-	matches := 0
-	for i := range attachments {
-		if attachments[i].ID == id {
-			if found == nil {
-				found = &attachments[i]
-			}
-			matches++
-		}
-	}
-	for i := range nested {
-		nestedFound, nestedMatches := findMailReadAttachment(nested[i].Attachments, nested[i].NestedMessages, id)
-		if found == nil {
-			found = nestedFound
-		}
-		matches += nestedMatches
-	}
-	return found, matches
-}
-
 // decodeFlexibleID accepts a provider id sent as a JSON string or number.
 func decodeFlexibleID(raw json.RawMessage) (string, error) {
 	var text string
@@ -694,7 +615,7 @@ func decodeLenientMailAddresses(raw json.RawMessage) ([]mailAddress, error) {
 		}
 		address := mailAddress{}
 		if pair[0] != nil {
-			address.Name = *pair[0]
+			address.Name = displayName(*pair[0])
 		}
 		if pair[1] != nil {
 			address.Address = *pair[1]

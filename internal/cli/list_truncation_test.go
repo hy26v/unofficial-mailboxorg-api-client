@@ -166,7 +166,7 @@ func boundedListCases() []boundedListCase {
 		},
 		{
 			operation: "mail.search",
-			args:      []string{"mail", "search", "--query", "invoice"},
+			args:      []string{"mail", "search", "--folder", "default0/INBOX", "--query", "invoice"},
 			items:     "items",
 			handle: func(s *testutil.Server, rows int) {
 				data := make([]any, 0, rows)
@@ -190,6 +190,25 @@ func boundedListCases() []boundedListCase {
 					data = append(data, []any{
 						fmt.Sprint(i), fmt.Sprintf("Invoice %d", i),
 						[]any{[]any{nil, fmt.Sprintf("p%d@example.org", i)}}, 1700000000000, []any{}, []any{},
+					})
+				}
+				s.Handle("/ajax/mail", "search", testutil.Response{Body: map[string]any{"data": data}})
+			},
+		},
+		{
+			operation: "mail.thread",
+			args:      []string{"mail", "thread", "--id", "1", "--folder", "default0/INBOX"},
+			items:     "items",
+			handle: func(s *testutil.Server, rows int) {
+				s.Handle("/ajax/folders", "list", testutil.Response{Body: map[string]any{"data": []any{[]any{"default0/INBOX", "Inbox", "mail", 1, false}}}})
+				s.Handle("/ajax/account", "get", testutil.Response{Body: map[string]any{"data": map[string]any{"id": 0}}})
+				s.Handle("/ajax/mail", "get", testutil.Response{Body: map[string]any{"data": map[string]any{
+					"id": "1", "folder_id": "default0/INBOX", "subject": "Re: Invoice", "flags": 0, "attachments": []any{},
+				}}})
+				data := make([]any, 0, rows)
+				for i := 1; i <= rows; i++ {
+					data = append(data, []any{
+						fmt.Sprint(i), "Invoice", []any{[]any{nil, fmt.Sprintf("p%d@example.org", i)}}, 1700000000000 - int64(i), []any{},
 					})
 				}
 				s.Handle("/ajax/mail", "search", testutil.Response{Body: map[string]any{"data": data}})

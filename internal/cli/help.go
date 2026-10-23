@@ -479,8 +479,9 @@ Tools:
 
 Typed tools for frequent tasks take the operation's arguments directly:
 mbx_mail_list, mbx_mail_search, mbx_mail_correspondents, mbx_mail_read,
-mbx_mail_senders, mbx_events_list, mbx_contacts_list, and, when changes are offered,
-mbx_mail_draft and mbx_mail_move.
+mbx_mail_attachment, mbx_mail_thread, mbx_mail_senders, mbx_events_list,
+mbx_contacts_list, and, when changes are offered, mbx_mail_draft and mbx_mail_move.
+Each offers every argument of its operation except flags that change data.
 They follow the same read-only and mcp.allowed_writes rules. --task-tools=false
 offers only the five tools above.
 

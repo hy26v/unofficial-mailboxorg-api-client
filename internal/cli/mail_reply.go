@@ -142,8 +142,20 @@ func replySubject(subject string) string {
 
 // headerAddress formats a name and address for a header, without line breaks.
 func headerAddress(address mailAddress) string {
-	name := strings.Join(strings.Fields(address.Name), " ")
+	name := displayName(address.Name)
 	return (&mail.Address{Name: name, Address: address.Address}).String()
+}
+
+// displayName is a provider display name with white space collapsed and without the
+// double quotes of a quoted string: for a name such as "Supplier Example S.L.", which must be
+// quoted in a header, the provider returns the quotes as part of the name.
+func displayName(name string) string {
+	name = strings.Join(strings.Fields(name), " ")
+	if len(name) >= 2 && name[0] == '"' && name[len(name)-1] == '"' {
+		name = strings.ReplaceAll(strings.ReplaceAll(name[1:len(name)-1], `\"`, `"`), `\\`, `\`)
+		name = strings.TrimSpace(name)
+	}
+	return name
 }
 
 // addressSet tracks lower-case addresses.
@@ -152,15 +164,25 @@ type addressSet map[string]bool
 func (s addressSet) has(address string) bool { return s[strings.ToLower(strings.TrimSpace(address))] }
 func (s addressSet) add(address string)      { s[strings.ToLower(strings.TrimSpace(address))] = true }
 
-// replyRecipients chooses the reply's To and Cc. A reply goes to Reply-To, or else to the
-// sender; a reply to the account's own message goes to that message's recipients. With
-// replyAll, Cc has the other recipients, without the account's own addresses.
-func replyRecipients(original mailReadResult, replyTo string, own addressSet, replyAll bool) (to, cc []string) {
+// Sources of a draft's To, reported as to_source.
+const (
+	mailToSourceGiven      = "given"
+	mailToSourceReplyTo    = "reply-to"
+	mailToSourceFrom       = "from"
+	mailToSourceRecipients = "original-recipients"
+	mailToSourceReplaced   = "replaced-draft"
+)
+
+// replyRecipients chooses the reply's To and Cc, and names where To comes from. A reply
+// goes to Reply-To, or else to the sender; a reply to the account's own message goes to
+// that message's recipients. With replyAll, Cc has the other recipients, without the
+// account's own addresses.
+func replyRecipients(original mailReadResult, replyTo string, own addressSet, replyAll bool) (to, cc []string, source string) {
 	var toAddresses, ccAddresses []mailAddress
 	ownMessage := len(original.From) > 0 && own.has(original.From[0].Address)
 	switch {
 	case ownMessage:
-		toAddresses = original.To
+		toAddresses, source = original.To, mailToSourceRecipients
 		if replyAll {
 			ccAddresses = original.Cc
 		}
@@ -169,8 +191,9 @@ func replyRecipients(original mailReadResult, replyTo string, own addressSet, re
 			for _, address := range list {
 				toAddresses = append(toAddresses, mailAddress{Name: address.Name, Address: address.Address})
 			}
+			source = mailToSourceReplyTo
 		} else {
-			toAddresses = original.From
+			toAddresses, source = original.From, mailToSourceFrom
 		}
 		if replyAll {
 			ccAddresses = append(append([]mailAddress{}, original.To...), original.Cc...)
@@ -191,7 +214,7 @@ func replyRecipients(original mailReadResult, replyTo string, own addressSet, re
 		seen.add(address.Address)
 		cc = append(cc, headerAddress(address))
 	}
-	return to, cc
+	return to, cc, source
 }
 
 // replySender picks the sender address of a reply: the account's own address that the
@@ -276,9 +299,10 @@ func prepareMailReply(ctx context.Context, c *client.Client, sess client.Session
 	for _, sender := range senders {
 		own.add(sender.Address)
 	}
-	to, cc := replyRecipients(original, headers.replyTo, own, reply.replyAll)
+	to, cc, source := replyRecipients(original, headers.replyTo, own, reply.replyAll)
+	msg.toSource = mailToSourceGiven
 	if len(msg.To) == 0 {
-		msg.To = to
+		msg.To, msg.toSource = to, source
 	}
 	if len(msg.Cc) == 0 {
 		msg.Cc = cc

@@ -1,6 +1,6 @@
 # API coverage notes
 
-The CLI currently registers 87 operations. The 2026-08-17 full matrix accounted for the
+The CLI currently registers 88 operations. The 2026-08-17 full matrix accounted for the
 82 operations registered then: 81 passed end to end, the separately gated password round
 trip was skipped, and there were zero failures or cleanup failures. The two operations
 added before that matrix and after the earlier 80-operation matrix are `folders.ensure`
@@ -19,6 +19,17 @@ and removed reply draft, but not a configured default signature: `--links` on
 the reply arguments of `mail.draft` (Message-ID from the `headers` object of
 `mail?action=get`, or from the message source with `src=1`), and `--signature` on
 `mail.draft` and `mail.send` (`snippet?action=get`).
+A second field report added `mail.thread` (read-only) and these arguments; a live check
+on 2026-10-23 covered each of them, including saved and revised drafts:
+folder `all` and the position cursor (`at:`) of recursive `mail.list` and `mail.search`,
+whose folder scans now list children only of folders whose `subfolders` column is true
+and leave out Drafts with `drafts_fullname` or `drafts` of `account?action=get`;
+`--fields snippet` (one `mail?action=get` per result); the `to` column for Sent and
+Drafts (`sent_fullname` or `sent`); `--content`, `--max-bytes` and `--offset` of
+`mail.attachment` (`mail?action=attachment`, with text extracted locally from PDF, DOCX, XLSX,
+ODT, HTML and text files); `--replace-id` of `mail.draft` (`mail?action=get` of the old
+draft, then `mail?action=update` to Trash after `mail?action=new`); and the routing
+headers of `mail.read`, read from the same `headers` object as the reply arguments.
 
 Coverage here means the supported `mbx` surface, not every module exposed by the much
 larger Open-Xchange platform. The actions below are intentionally absent because the
